@@ -52,10 +52,6 @@ namespace eft_dma_radar.Arena.GameWorld
 
             for (int i = 0; i < active.Length; i++)
                 ProcessScatterResults(scatter, active[i]);
-
-            // Flush the match-position log periodically so the file is usable
-            // during a live match without waiting for match-end.
-            MatchPositionLogger.Flush();
         }
 
         private static void ProcessScatterResults(VmmScatter scatter, Player player)
@@ -158,7 +154,6 @@ namespace eft_dma_radar.Arena.GameWorld
                                     player.Position = worldPos;
                                     player.HasValidPosition = true;
                                     player.RealtimeEstablished = true;
-                                    MatchPositionLogger.Record(player);
                                 }
                             }
                             else if (posOk)
@@ -380,7 +375,6 @@ namespace eft_dma_radar.Arena.GameWorld
                     // Realtime hasn't taken ownership yet ΓÇö bones are the only source of truth.
                     p.Position = wp;
                     p.HasValidPosition = true;
-                    MatchPositionLogger.RecordBone(p);
                     continue;
                 }
 
@@ -397,7 +391,6 @@ namespace eft_dma_radar.Arena.GameWorld
                     p.RealtimeEstablished = false;
                     p.ConsecutiveErrors = 0;
                     p.LastPositionChangeMs = 0;
-                    MatchPositionLogger.RecordBone(p, wasStale: true);
                     Log.WriteRateLimited(AppLogLevel.Debug, $"stale_pos_{p.Base:X}", TimeSpan.FromSeconds(5),
                         $"[RegisteredPlayers] '{p.Name}': realtime position stale (╬ö={MathF.Sqrt(delta.LengthSquared()):F1}m) ΓÇö switched to bone-derived position, invalidating transform.");
                 }
@@ -527,7 +520,6 @@ namespace eft_dma_radar.Arena.GameWorld
             {
                 player.Position         = initPos;
                 player.HasValidPosition = true;
-                MatchPositionLogger.RecordInit(player);
             }
 
             Log.Write(AppLogLevel.Debug,

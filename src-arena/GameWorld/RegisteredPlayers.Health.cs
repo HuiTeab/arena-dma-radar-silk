@@ -118,8 +118,6 @@ namespace eft_dma_radar.Arena.GameWorld
                     if (ohcAddrs[i].IsValidVirtualAddress() && backrefs[i] == p.Base)
                     {
                         p.ObservedHealthControllerAddr = ohcAddrs[i];
-                        Log.Write(AppLogLevel.Debug,
-                            $"[RegisteredPlayers] OHC resolved for '{p.Name}': 0x{ohcAddrs[i]:X}");
                     }
                     else
                     {

@@ -193,7 +193,8 @@ namespace SDK
             public static uint location       = 0x38; // string  (e.g. "Arena_Bay5")
             public static uint sid            = 0x40; // string  (full session id)
             public static uint gameMode       = 0x48; // string  (e.g. "deathmatch")
-            public static uint shortId        = 0x50; // string  (6-char lobby code)
+            // shortId at +0x50 intentionally omitted — sensitive lobby code,
+            // not read anywhere in the radar. See LocalGameWorld.TryResolveMatchInfo.
             public static uint utcPenaltyTime = 0x58; // double
             public static uint rankingMode    = 0x60; // int
         }

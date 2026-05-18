@@ -542,14 +542,6 @@ namespace eft_dma_radar.Arena.UI
                     ImGui.TextColored(new Vector4(0.50f, 0.52f, 0.55f, 1f), "\u2502");
                     ImGui.SameLine(0, 16);
                     ImGui.TextColored(new Vector4(0.60f, 0.62f, 0.65f, 1f), $"Zoom: {_zoom}");
-
-                    if (!string.IsNullOrEmpty(gw.MatchShortId))
-                    {
-                        ImGui.SameLine(0, 16);
-                        ImGui.TextColored(new Vector4(0.50f, 0.52f, 0.55f, 1f), "\u2502");
-                        ImGui.SameLine(0, 16);
-                        ImGui.TextColored(new Vector4(0.60f, 0.62f, 0.65f, 1f), $"Lobby: {gw.MatchShortId}");
-                    }
                 }
             }
 

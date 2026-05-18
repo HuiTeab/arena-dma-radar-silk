@@ -1,6 +1,5 @@
 using eft_dma_radar.Arena.GameWorld;
 using eft_dma_radar.Arena.GameWorld.Players;
-using eft_dma_radar.Arena.Unity;
 using ImGuiNET;
 using SDK;
 
@@ -54,48 +53,6 @@ namespace eft_dma_radar.Arena.UI
             _avTeamBlue    = ImGui.GetColorU32(new Vector4(0.30f, 0.50f, 0.95f, 1f));
             _aimviewColorsReady = true;
         }
-
-        // Diagnostic counters (printed once per second when widget is open).
-        private static long _avNextLogTick;
-        private static int _avFrames, _avCandidates, _avSkippedAI, _avSkippedDist,
-                           _avSkippedZeroPos, _avSkippedOffscreen, _avSkippedProjFail, _avDrawn;
-
-        // Stability metrics: frame-to-frame Y-delta in screen pixels for the head bone
-        // (anchor for the new ESP box) and the eye projection (legacy anchor). Compared
-        // side-by-side these quantify how much steadier the bone-anchored render is.
-        // Also tracks the |bone − eye| offset variance — large variance ⇒ the two
-        // scatters disagree (scatter-staleness drift). Reset every log tick.
-        private static double _avHeadJitterPxSum, _avEyeJitterPxSum, _avBoneEyeOffsetSum;
-        private static double _avBoneEyeOffsetSumSq;
-        private static int _avHeadJitterSamples, _avEyeJitterSamples, _avBoneEyeOffsetSamples;
-        // Per-player previous-frame screen Y for delta computation, plus the most
-        // recent observed values for the per-player stability CSV. Keyed by Player.Base
-        // (stable pointer) so renames don't break tracking. Entries time out after 5 s
-        // of being unseen to avoid unbounded growth across long matches.
-        private sealed class JitterTrack
-        {
-            public float PrevHeadY, PrevEyeY;
-            public long LastSeenMs;
-            // Last frame's raw reads — for per-player CSV row emitted each per-second tick.
-            public string Name = "";
-            public string PlayerType = "";
-            public bool IsLocal, IsAI;
-            public bool IsAlive;          // OHC.IsAlive (BatchUpdateHealthStatuses, 250 ms cadence)
-            public string HealthStatus = "Healthy"; // bucketed from OHC.HealthStatus bitmask
-            public ulong OhcAddr;         // resolved OHC pointer (0 until Phase 1 succeeds)
-            public Vector3 Position;     // player.Position — from realtime player scatter (eye/raycast)
-            public float Yaw, Pitch;     // player.RotationYaw / RotationPitch
-            public Vector3 HeadWorld;    // HumanHead bone — from skeleton scatter
-            public Vector3 FootWorld;    // lower of HumanLFoot / HumanRFoot — same scatter
-            public Vector2 EyeScr;       // (sx, sy) — projection of player.Position
-            public Vector2 HeadScr;      // ScreenBuffer[0] — projection of head bone
-            public Vector2 FootScr;      // projection of the lower foot bone
-            public float HeadYDeltaPx;   // |headY(t) - headY(t-1)| from the last frame compared
-            public float EyeYDeltaPx;    // |eyeY(t) - eyeY(t-1)| from the last frame compared
-            public float DistanceM;      // distance from local eye
-        }
-        private static readonly Dictionary<ulong, JitterTrack> _avJitterByPlayer = new();
-        private static long _avNextJitterGcMs;
 
         /// <summary>Draws the Aimview ImGui window when enabled.</summary>
         private static void DrawAimviewWidget()
@@ -264,97 +221,6 @@ namespace eft_dma_radar.Arena.UI
                     }
                     drawn++;
 
-                    // ── Stability metrics ─────────────────────────────────────────
-                    // Compare frame-to-frame jitter of head-bone Y vs eye-projection Y
-                    // and the bone↔eye Y offset variance. These quantify how much
-                    // steadier the bone-anchored rendering is than the legacy
-                    // p.Position-anchored rendering, and surface scatter-staleness
-                    // drift between the two memory snapshots.
-                    //
-                    // Each tracked player also stashes its latest raw position /
-                    // rotation reads, world bone positions, and screen-space anchors
-                    // so the per-second writer can emit one row per visible player
-                    // into stability-{ts}-players.csv for offline analysis.
-                    if (drawnSkeleton is not null)
-                    {
-                        float headY = drawnSkeleton.ScreenBuffer[0].Y; // head bone projection
-                        float eyeY  = sy;                              // p.Position projection
-                        long nowMs  = Environment.TickCount64;
-
-                        // Reappearance guard: if the player wasn't tracked in the last
-                        // ~100ms (off-screen, behind cover, or fresh respawn), the
-                        // previous Y values are stale and would produce a fake "spike"
-                        // equal to wherever the player moved during the gap. Skip the
-                        // delta this frame but still refresh PrevHeadY/PrevEyeY so the
-                        // next frame computes a real frame-to-frame delta.
-                        const long JitterMaxGapMs = 100;
-                        if (!_avJitterByPlayer.TryGetValue(p.Base, out var jt))
-                        {
-                            jt = new JitterTrack();
-                            _avJitterByPlayer[p.Base] = jt;
-                        }
-                        else if (nowMs - jt.LastSeenMs <= JitterMaxGapMs)
-                        {
-                            float dh = MathF.Abs(headY - jt.PrevHeadY);
-                            float de = MathF.Abs(eyeY  - jt.PrevEyeY);
-                            _avHeadJitterPxSum += dh; _avHeadJitterSamples++;
-                            _avEyeJitterPxSum  += de; _avEyeJitterSamples++;
-                            jt.HeadYDeltaPx = dh;
-                            jt.EyeYDeltaPx  = de;
-                        }
-                        else
-                        {
-                            // Gap was too long — reset the recorded deltas so the
-                            // per-player CSV row doesn't carry stale spike values.
-                            jt.HeadYDeltaPx = 0f;
-                            jt.EyeYDeltaPx  = 0f;
-                        }
-                        jt.PrevHeadY  = headY;
-                        jt.PrevEyeY   = eyeY;
-                        jt.LastSeenMs = nowMs;
-
-                        float offset = eyeY - headY;
-                        _avBoneEyeOffsetSum   += offset;
-                        _avBoneEyeOffsetSumSq += offset * (double)offset;
-                        _avBoneEyeOffsetSamples++;
-
-                        // Capture raw reads + world/screen anchors for the per-player CSV.
-                        jt.Name         = p.Name ?? "";
-                        jt.PlayerType   = p.Type.ToString();
-                        jt.IsLocal      = p.IsLocalPlayer;
-                        jt.IsAI         = IsAIPlayer(p.Type);
-                        jt.IsAlive      = p.IsAlive;
-                        jt.HealthStatus = p.HealthStatus.ToString();
-                        jt.OhcAddr      = p.ObservedHealthControllerAddr;
-                        jt.Position     = p.Position;
-                        jt.Yaw          = p.RotationYaw;
-                        jt.Pitch        = p.RotationPitch;
-                        jt.DistanceM    = dist;
-                        jt.EyeScr       = new Vector2(sx, sy);
-                        jt.HeadScr      = drawnSkeleton.ScreenBuffer[0];
-
-                        // World head from the bone tracker. Falls back to default if the
-                        // bone hasn't been read yet (rare — the screen buffer was just built).
-                        jt.HeadWorld = drawnSkeleton.GetBonePosition(Bones.HumanHead) ?? default;
-
-                        // Lower-foot world + screen — mirrors the ESP box anchor logic so
-                        // the CSV captures the actual values the box/name are using.
-                        var lFootW = drawnSkeleton.GetBonePosition(Bones.HumanLFoot);
-                        var rFootW = drawnSkeleton.GetBonePosition(Bones.HumanRFoot);
-                        if (lFootW.HasValue && rFootW.HasValue)
-                            jt.FootWorld = lFootW.Value.Y < rFootW.Value.Y ? lFootW.Value : rFootW.Value;
-                        else
-                            jt.FootWorld = lFootW ?? rFootW ?? default;
-
-                        // Same "lowest Y in buffer" scan as the label anchor so screen-side
-                        // numbers in the CSV align with what's drawn.
-                        var sbuf = drawnSkeleton.ScreenBuffer;
-                        float fX = sbuf[0].X, fY = sbuf[0].Y;
-                        for (int i = 1; i < Skeleton.JOINTS_COUNT; i++)
-                            if (sbuf[i].Y > fY) { fY = sbuf[i].Y; fX = sbuf[i].X; }
-                        jt.FootScr = new Vector2(fX, fY);
-                    }
-
                     if (showLabels)
                     {
                         string label = string.IsNullOrEmpty(p.Name)
@@ -398,153 +264,12 @@ namespace eft_dma_radar.Arena.UI
                                : skipProj == total ? "all projections failed (behind camera?)"
                                : skipOff  == total ? "all players outside widget area"
                                : skipAI   == total ? "all candidates filtered (Hide AI)"
-                               : "see log for breakdown";
+                               : "no candidates";
                     var msg = $"No players drawn — {why}";
                     var sz = ImGui.CalcTextSize(msg);
                     var pos = new Vector2(center.X - sz.X * 0.5f, contentMax.Y - sz.Y - 6);
                     drawList.AddText(new Vector2(pos.X + 1, pos.Y + 1), _avColorShadow, msg);
                     drawList.AddText(pos, _avColorEnemy, msg);
-                }
-                // dots may be missing without spamming the log every frame.
-                _avFrames++;
-                _avCandidates += total;
-                _avSkippedAI += skipAI;
-                _avSkippedDist += skipDist;
-                _avSkippedZeroPos += skipZero;
-                _avSkippedOffscreen += skipOff;
-                _avSkippedProjFail += skipProj;
-                _avDrawn += drawn;
-
-                long now = Environment.TickCount64;
-                if (now >= _avNextLogTick)
-                {
-                    _avNextLogTick = now + 1000;
-                    var vmT = CameraManager.ViewMatrixTranslation;
-
-                    // Find a sample non-local player to demonstrate W2S behavior.
-                    string sample = "(no candidate)";
-                    foreach (var p in gw!.Players)
-                    {
-                        if (p.IsLocalPlayer || !p.HasValidPosition) continue;
-                        if (p.Position.LengthSquared() < 1f) continue;
-                        var wp = p.Position;
-                        if (useAdvanced)
-                        {
-                            bool ok = CameraManager.WorldToScreen(ref wp, out var advScr);
-                            sample = $"sample='{p.Name}' wp=<{wp.X:F1},{wp.Y:F1},{wp.Z:F1}> " +
-                                     (ok ? $"adv→<{advScr.X:F0},{advScr.Y:F0}>" : "adv=FAIL");
-                        }
-                        else
-                        {
-                            var sd = wp - eyePos;
-                            float synDz = Vector3.Dot(sd, forward);
-                            sample = $"sample='{p.Name}' wp=<{wp.X:F1},{wp.Y:F1},{wp.Z:F1}> dz={synDz:F2}";
-                        }
-                        break;
-                    }
-
-                    // Stability metrics: average frame-to-frame Y delta in screen pixels
-                    // for the bone-anchored render (headJitter) vs the legacy eye-anchored
-                    // render (eyeJitter). The bone↔eye offset stats expose the variance in
-                    // disagreement between the skeleton scatter and the realtime player
-                    // scatter — if σ is large the two scatters are landing on different
-                    // ticks, which is the underlying source of the jumpiness.
-                    double headJitter = _avHeadJitterSamples > 0
-                        ? _avHeadJitterPxSum / _avHeadJitterSamples : 0.0;
-                    double eyeJitter = _avEyeJitterSamples > 0
-                        ? _avEyeJitterPxSum / _avEyeJitterSamples : 0.0;
-                    double boneEyeAvg = 0.0, boneEyeStd = 0.0;
-                    if (_avBoneEyeOffsetSamples > 0)
-                    {
-                        boneEyeAvg = _avBoneEyeOffsetSum / _avBoneEyeOffsetSamples;
-                        double variance = (_avBoneEyeOffsetSumSq / _avBoneEyeOffsetSamples)
-                                        - (boneEyeAvg * boneEyeAvg);
-                        boneEyeStd = variance > 0 ? Math.Sqrt(variance) : 0.0;
-                    }
-
-                    Log.Write(AppLogLevel.Debug,
-                        $"[Aimview] mode={(useAdvanced ? "ADV" : "SYN")} " +
-                        $"frames={_avFrames} viewport={CameraManager.ViewportWidth}x{CameraManager.ViewportHeight} " +
-                        $"widget={widgetW}x{widgetH} " +
-                        $"eye=<{eyePos.X:F1},{eyePos.Y:F1},{eyePos.Z:F1}> localOk={localOk} " +
-                        $"yaw={(localOk ? local!.RotationYaw : 0f):F1} pitch={(localOk ? local!.RotationPitch : 0f):F1} | " +
-                        $"VM.T=<{vmT.X:F2},{vmT.Y:F2},{vmT.Z:F2}> usableVM={CameraManager.HasUsableViewMatrix} " +
-                        $"FOV={CameraManager.FieldOfView:F1} AR={CameraManager.AspectRatio:F2} | " +
-                        $"cand={_avCandidates} drawn={_avDrawn} " +
-                        $"skip(ai={_avSkippedAI},dist={_avSkippedDist},zero={_avSkippedZeroPos}," +
-                        $"proj={_avSkippedProjFail},off={_avSkippedOffscreen}) | " +
-                        $"stability headJitter={headJitter:F2}px/f eyeJitter={eyeJitter:F2}px/f " +
-                        $"boneEyeΔ={boneEyeAvg:+0.0;-0.0}±{boneEyeStd:F1}px n={_avBoneEyeOffsetSamples} | " +
-                        $"{sample}");
-
-                    // Mirror the stability slice to a dedicated CSV so a full match
-                    // can be inspected in a spreadsheet without grepping debug logs.
-                    StabilityLog.Record(
-                        mode:            useAdvanced ? "ADV" : "SYN",
-                        frames:          _avFrames,
-                        drawn:           _avDrawn,
-                        candidates:      _avCandidates,
-                        headJitterPx:    headJitter,
-                        eyeJitterPx:     eyeJitter,
-                        boneEyeAvgPx:    boneEyeAvg,
-                        boneEyeStdPx:    boneEyeStd,
-                        boneEyeSamples:  _avBoneEyeOffsetSamples);
-
-                    // Emit one row per visible player into the per-player CSV. We only
-                    // include players seen THIS tick (LastSeenMs ≥ now-1000) so a player
-                    // who left view doesn't keep producing stale rows until GC. The base
-                    // pointer + raw position/rotation reads paired with bone reads make
-                    // it obvious whether the realtime scatter is lagging the skeleton
-                    // scatter for a specific player vs all of them.
-                    long perPlayerCutoff = now - 1000;
-                    foreach (var kv in _avJitterByPlayer)
-                    {
-                        if (kv.Value.LastSeenMs < perPlayerCutoff) continue;
-                        var jt = kv.Value;
-                        StabilityLog.RecordPlayer(
-                            playerBase:    kv.Key,
-                            name:          jt.Name,
-                            type:          jt.PlayerType,
-                            isLocal:       jt.IsLocal,
-                            isAI:          jt.IsAI,
-                            isAlive:       jt.IsAlive,
-                            healthStatus:  jt.HealthStatus,
-                            ohcAddr:       jt.OhcAddr,
-                            position:      jt.Position,
-                            yaw:           jt.Yaw,
-                            pitch:         jt.Pitch,
-                            headWorld:     jt.HeadWorld,
-                            footWorld:     jt.FootWorld,
-                            eyeScr:        jt.EyeScr,
-                            headScr:       jt.HeadScr,
-                            footScr:       jt.FootScr,
-                            headYDeltaPx:  jt.HeadYDeltaPx,
-                            eyeYDeltaPx:   jt.EyeYDeltaPx,
-                            distanceM:     jt.DistanceM);
-                    }
-
-                    _avFrames = _avCandidates = _avSkippedAI = _avSkippedDist =
-                        _avSkippedZeroPos = _avSkippedOffscreen = _avSkippedProjFail = _avDrawn = 0;
-                    _avHeadJitterPxSum = _avEyeJitterPxSum = 0.0;
-                    _avHeadJitterSamples = _avEyeJitterSamples = 0;
-                    _avBoneEyeOffsetSum = _avBoneEyeOffsetSumSq = 0.0;
-                    _avBoneEyeOffsetSamples = 0;
-
-                    // GC stale jitter-track entries (player left match, was culled, etc.).
-                    // Runs once every 5 s to keep the dictionary small over long matches.
-                    if (now >= _avNextJitterGcMs)
-                    {
-                        _avNextJitterGcMs = now + 5000;
-                        long staleMs = now - 5000;
-                        List<ulong>? toRemove = null;
-                        foreach (var kv in _avJitterByPlayer)
-                        {
-                            if (kv.Value.LastSeenMs < staleMs)
-                                (toRemove ??= new List<ulong>()).Add(kv.Key);
-                        }
-                        if (toRemove is not null)
-                            foreach (var k in toRemove) _avJitterByPlayer.Remove(k);
-                    }
                 }
             }
             finally

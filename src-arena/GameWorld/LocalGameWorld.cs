@@ -82,9 +82,6 @@ namespace eft_dma_radar.Arena.GameWorld
         /// <summary>BSG-side mode genre string (e.g. "deathmatch"). Empty until resolved.</summary>
         public string MatchGameMode { get; private set; } = string.Empty;
 
-        /// <summary>6-char in-game lobby code (matches the code displayed in the Arena UI). Empty until resolved.</summary>
-        public string MatchShortId { get; private set; } = string.Empty;
-
         /// <summary>Game server endpoint formatted as "ip:port", or empty if not yet resolved.</summary>
         public string MatchServer { get; private set; } = string.Empty;
 
@@ -241,7 +238,6 @@ namespace eft_dma_radar.Arena.GameWorld
 
         public void Start()
         {
-            // MatchPositionLogger.Open(); // CSV logging disabled
             _registrationWorker?.Start();
             _realtimeWorker?.Start();
             _cameraWorker?.Start();
@@ -252,7 +248,6 @@ namespace eft_dma_radar.Arena.GameWorld
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
 
-            // MatchPositionLogger.Close(); // CSV logging disabled
             _realtimeWorker?.Dispose();
             _registrationWorker?.Dispose();
             _cameraWorker?.Dispose();
@@ -436,14 +431,17 @@ namespace eft_dma_radar.Arena.GameWorld
 
                 MatchMode = (SDK.ERaidMode)raidMode;
                 MatchGameMode = ReadProfileString(ps + SDK.Offsets.ProfileStatus.gameMode) ?? string.Empty;
-                MatchShortId  = ReadProfileString(ps + SDK.Offsets.ProfileStatus.shortId)  ?? string.Empty;
+
+                // Lobby code (ProfileStatus.shortId) is intentionally NOT read — it
+                // identifies the current match in the BSG backend and is sensitive.
+                // Match state can be tracked by mode/server alone.
 
                 string ip = ReadProfileString(ps + SDK.Offsets.ProfileStatus.ip) ?? string.Empty;
                 int port  = Memory.TryReadValue<int>(ps + SDK.Offsets.ProfileStatus.port, out var p, false) ? p : 0;
                 MatchServer = string.IsNullOrEmpty(ip) ? string.Empty : $"{ip}:{port}";
 
                 _matchInfoResolved = true;
-                Log.WriteLine($"[LocalGameWorld] Match resolved: mode={MatchMode} ({raidMode}), gameMode='{MatchGameMode}', shortId='{MatchShortId}', server={MatchServer}");
+                Log.WriteLine($"[LocalGameWorld] Match resolved: mode={MatchMode} ({raidMode}), gameMode='{MatchGameMode}', server={MatchServer}");
             }
             catch (Exception ex)
             {

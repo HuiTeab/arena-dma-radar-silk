@@ -75,6 +75,29 @@ namespace eft_dma_radar.Arena.GameWorld
                     nickSucceeded = !string.IsNullOrWhiteSpace(name);
                     typeSucceeded = sideRaw != 0;
 
+                    // Placeholder-entry guard. Mid-match and especially near match-end,
+                    // Arena's RegisteredPlayers list briefly contains ObservedPlayerView
+                    // pointers whose state hasn't been populated (and never will be —
+                    // server-side teardown, spectator stubs, mid-match join buffers).
+                    // Those produce side=0, no nickname, id=0 → the discovery code
+                    // would label them "PMC0" with PlayerType.Default and render them
+                    // as white dots stuck at <0,0,0>. Multiple such entries can stack
+                    // in the dict (different bases, same fallback name).
+                    //
+                    // Skip the registration entirely when BOTH nickname AND side fail
+                    // for a non-AI player AND the lookTransform pointer is null/invalid
+                    // (no chance of producing a position). Next registration tick will
+                    // re-evaluate; once the OPV is properly populated, we'll add it.
+                    if (!isAI && !nickSucceeded && !typeSucceeded)
+                    {
+                        bool lookValid = Memory.TryReadPtr(
+                                              playerBase + Offsets.ObservedPlayerView._playerLookRaycastTransform,
+                                              out var lookPtr, false)
+                                         && lookPtr.IsValidVirtualAddress();
+                        if (!lookValid)
+                            return null;
+                    }
+
                     // AccountId: not populated by Arena's server ΓÇö skipped.
                     // ProfileId (optional)
                     if (Memory.TryReadPtr(playerBase + Offsets.ObservedPlayerView.ProfileId, out var profPtr, false)

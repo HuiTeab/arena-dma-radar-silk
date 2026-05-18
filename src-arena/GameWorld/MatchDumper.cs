@@ -517,8 +517,8 @@ namespace eft_dma_radar.Arena.GameWorld
                             //   +0x38 location     : string
                             //   +0x40 sid          : string
                             //   +0x48 gameMode     : string  (mode short name)
-                            //   +0x50 shortId      : string  (match short id)
                             //   +0x60 rankingMode  : valuetype (int)
+                            //   shortId at +0x50 intentionally skipped (lobby code).
                             const uint OffNetworkGameProfileStatus = 0x120;
                             const uint OffProfileStatusStatus      = 0x20;
                             const uint OffProfileStatusRaidMode    = 0x24;
@@ -527,7 +527,6 @@ namespace eft_dma_radar.Arena.GameWorld
                             const uint OffProfileStatusLocation    = 0x38;
                             const uint OffProfileStatusSid         = 0x40;
                             const uint OffProfileStatusGameMode    = 0x48;
-                            const uint OffProfileStatusShortId     = 0x50;
                             const uint OffProfileStatusRankingMode = 0x60;
                             if (Memory.TryReadPtr(lpGame + OffNetworkGameProfileStatus, out var profileStatus, false)
                                 && profileStatus.IsValidVirtualAddress())
@@ -555,7 +554,7 @@ namespace eft_dma_radar.Arena.GameWorld
                                 }
                                 sw.WriteLine($"//     _profileStatus.gameMode    = {ReadProfileStr(profileStatus, OffProfileStatusGameMode)}");
                                 sw.WriteLine($"//     _profileStatus.location    = {ReadProfileStr(profileStatus, OffProfileStatusLocation)}");
-                                sw.WriteLine($"//     _profileStatus.shortId     = {ReadProfileStr(profileStatus, OffProfileStatusShortId)}");
+                                // _profileStatus.shortId at +0x50 intentionally not dumped (lobby code).
                                 sw.WriteLine($"//     _profileStatus.sid         = {ReadProfileStr(profileStatus, OffProfileStatusSid)}");
                                 sw.WriteLine($"//     _profileStatus.ip          = {ReadProfileStr(profileStatus, OffProfileStatusIp)}");
                             }

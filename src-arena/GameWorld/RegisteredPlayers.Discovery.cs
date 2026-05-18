@@ -145,7 +145,7 @@ namespace eft_dma_radar.Arena.GameWorld
                     TypeResolved = typeSucceeded,
                 };
 
-                if (Log.EnableDebugLogging)
+                if (Log.EnableIl2CppDump)
                     DumpPlayerHierarchy(playerBase, player.Name, isLocal);
 
                 return player;
@@ -173,7 +173,7 @@ namespace eft_dma_radar.Arena.GameWorld
         /// <summary>
         /// Dumps the full IL2CPP hierarchy for a newly-discovered player and all relevant
         /// sub-objects (OPC, MovementController, HealthController, InventoryController, PlayerBody).
-        /// Only called when <see cref="Log.EnableDebugLogging"/> is <c>true</c>.
+        /// Only called when <see cref="Log.EnableIl2CppDump"/> is <c>true</c>.
         /// </summary>
         private static void DumpPlayerHierarchy(ulong playerBase, string name, bool isLocal)
         {

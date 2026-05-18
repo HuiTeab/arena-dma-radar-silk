@@ -106,7 +106,11 @@ namespace eft_dma_radar.Arena.UI
         private static void DrawRadar(SKCanvas canvas, LocalGameWorld gw, Player local, RadarMap map, float scale)
         {
             var canvasSize = new SKSize(_window.Size.X / scale, _window.Size.Y / scale);
-            var localMapPos = MapParams.ToMapPos(local.Position, map.Config);
+            // Use MapPosition (pelvis bone when available) so the local marker doesn't
+            // drift when local ADS-es or switches weapons — same stability lever as the
+            // per-player dots below.
+            var localStableWorld = local.MapPosition;
+            var localMapPos = MapParams.ToMapPos(localStableWorld, map.Config);
 
             MapParams mapParams;
             if (_freeMode)
@@ -122,7 +126,7 @@ namespace eft_dma_radar.Arena.UI
             }
 
             var windowBounds = new SKRect(0, 0, canvasSize.Width, canvasSize.Height);
-            map.Draw(canvas, local.Position.Y, mapParams.Bounds, windowBounds);
+            map.Draw(canvas, localStableWorld.Y, mapParams.Bounds, windowBounds);
 
             const float CullMargin = 120f;
             var worldBounds = mapParams.GetWorldBounds(CullMargin);
@@ -131,9 +135,13 @@ namespace eft_dma_radar.Arena.UI
             foreach (var p in gw.Players)
             {
                 if (!p.IsActive || !p.HasValidPosition) continue;
-                if (!worldBounds.Contains(p.Position)) continue;
-                var sp = mapParams.ToScreenPos(MapParams.ToMapPos(p.Position, mapCfg));
-                DrawPlayer(canvas, p, sp, isLocal: p.IsLocalPlayer, localPos: local.Position);
+                // Stable top-down position: pelvis bone when available, falls back to
+                // p.Position. Eliminates the X/Z dot jitter caused by the look-raycast
+                // shifting to the scope/hand/eye on weapon state changes.
+                var pMapWorld = p.MapPosition;
+                if (!worldBounds.Contains(pMapWorld)) continue;
+                var sp = mapParams.ToScreenPos(MapParams.ToMapPos(pMapWorld, mapCfg));
+                DrawPlayer(canvas, p, sp, isLocal: p.IsLocalPlayer, localPos: localStableWorld, pMapPos: pMapWorld);
             }
         }
 
@@ -141,8 +149,14 @@ namespace eft_dma_radar.Arena.UI
             LocalGameWorld? gw, Player? local)
         {
             Vector2 centerWorld = default;
+            // Pelvis-bone-derived center (when available) keeps the grid from
+            // sliding as local switches weapons / ADS-es.
+            Vector3 localMapWorld = default;
             if (local is { HasValidPosition: true })
-                centerWorld = new Vector2(local.Position.X, local.Position.Z);
+            {
+                localMapWorld = local.MapPosition;
+                centerWorld = new Vector2(localMapWorld.X, localMapWorld.Z);
+            }
             centerWorld += _gridPanOffset;
 
             var w = size.X / scale;
@@ -156,9 +170,10 @@ namespace eft_dma_radar.Arena.UI
             foreach (var p in gw.Players)
             {
                 if (!p.IsActive || !p.HasValidPosition) continue;
-                var sp = WorldToScreen(p.Position, centerWorld, screenCenter);
-                var lPos = local?.HasValidPosition == true ? local.Position : p.Position;
-                DrawPlayer(canvas, p, sp, isLocal: p.IsLocalPlayer, localPos: lPos);
+                var pMapWorld = p.MapPosition;
+                var sp = WorldToScreen(pMapWorld, centerWorld, screenCenter);
+                var lPos = local?.HasValidPosition == true ? localMapWorld : pMapWorld;
+                DrawPlayer(canvas, p, sp, isLocal: p.IsLocalPlayer, localPos: lPos, pMapPos: pMapWorld);
             }
         }
 
@@ -199,7 +214,7 @@ namespace eft_dma_radar.Arena.UI
                 screenCenter.Y - dz * _pixelsPerMeter);
         }
 
-        private static void DrawPlayer(SKCanvas canvas, Player p, SKPoint sp, bool isLocal, Vector3 localPos)
+        private static void DrawPlayer(SKCanvas canvas, Player p, SKPoint sp, bool isLocal, Vector3 localPos, Vector3 pMapPos)
         {
             var (fill, text) = GetPlayerPaints(p);
 
@@ -231,11 +246,13 @@ namespace eft_dma_radar.Arena.UI
                 // Silk-style info suffix: signed height (meters) + distance (meters).
                 // Neo Sans Std lacks the ▲/▼ glyphs (they render as tofu),
                 // so we use ASCII signed numbers, matching the Silk radar presentation.
+                // Use the same stable map-pos source as the dot so the numbers don't
+                // jump 1.5 m when the player's look raycast switches eye↔foot.
                 string infoTag = string.Empty;
                 if (Config.ShowHeightDiff)
                 {
-                    int h = (int)MathF.Round(p.Position.Y - localPos.Y);
-                    int d = (int)Vector3.Distance(localPos, p.Position);
+                    int h = (int)MathF.Round(pMapPos.Y - localPos.Y);
+                    int d = (int)Vector3.Distance(localPos, pMapPos);
                     infoTag = $"  {h:+0;-0;0}m  {d}m";
                 }
 

@@ -147,6 +147,7 @@ namespace eft_dma_radar.Arena.GameWorld
                         IsAI          = p.IsAI,
                         IsActive      = p.IsActive,
                         IsAlive       = p.IsAlive,
+                        HealthStatus  = p.HealthStatus.ToString(),
                         Position      = ToDumpVec(p.Position),
                         HasValidPosition = p.HasValidPosition,
                         RotationYaw   = p.RotationYaw,
@@ -155,6 +156,7 @@ namespace eft_dma_radar.Arena.GameWorld
                         AccountId     = p.AccountId,
                         TeamID        = p.TeamID,
                         TeamColor     = p.TeamID >= 0 ? ((ArmbandColorType)p.TeamID).ToString() : null,
+                        OHC           = p.ObservedHealthControllerAddr != 0 ? $"0x{p.ObservedHealthControllerAddr:X}" : null,
                         Base          = $"0x{p.Base:X}",
                     });
                 }
@@ -817,6 +819,7 @@ namespace eft_dma_radar.Arena.GameWorld
             [JsonPropertyName("isAI")]             public bool IsAI { get; init; }
             [JsonPropertyName("isActive")]         public bool IsActive { get; init; }
             [JsonPropertyName("isAlive")]          public bool IsAlive { get; init; }
+            [JsonPropertyName("healthStatus")]     public string HealthStatus { get; init; } = "";
             [JsonPropertyName("position")]         public DumpVec3? Position { get; init; }
             [JsonPropertyName("hasValidPosition")] public bool HasValidPosition { get; init; }
             [JsonPropertyName("rotationYaw")]      public float RotationYaw { get; init; }
@@ -825,6 +828,7 @@ namespace eft_dma_radar.Arena.GameWorld
             [JsonPropertyName("accountId")]        public string? AccountId { get; init; }
             [JsonPropertyName("teamId")]           public int TeamID { get; init; }
             [JsonPropertyName("teamColor")]        public string? TeamColor { get; init; }
+            [JsonPropertyName("ohc")]              public string? OHC { get; init; }
             [JsonPropertyName("base")]             public string Base { get; init; } = "";
         }
     }

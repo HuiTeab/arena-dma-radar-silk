@@ -24,6 +24,8 @@ namespace eft_dma_radar.Arena
                 var args = Environment.GetCommandLineArgs();
                 Log.EnableDebugLogging = Config.DebugLogging
                     || (args?.Contains("-debug", StringComparer.OrdinalIgnoreCase) ?? false);
+                Log.EnableIl2CppDump = Config.Il2CppDump
+                    || (args?.Contains("-il2cppdump", StringComparer.OrdinalIgnoreCase) ?? false);
                 Log.WriteLine("[ArenaProgram] Config loaded OK.");
 
                 ExceptionTracer.Install();

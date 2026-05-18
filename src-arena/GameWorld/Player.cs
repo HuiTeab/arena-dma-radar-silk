@@ -1,6 +1,7 @@
 ﻿namespace eft_dma_radar.Arena.GameWorld
 {
     using eft_dma_radar.Arena.GameWorld.Players;
+    using eft_dma_radar.Arena.Unity;
     using SDK;
 
     /// <summary>
@@ -18,6 +19,19 @@
         AIRaider,
         AIBoss,
         AIGuard,
+    }
+
+    /// <summary>
+    /// Health-status bucket derived from the <c>ObservedHealthController.HealthStatus</c>
+    /// bitmask. The bitmask is a [Flags] enum on the BSG side (ETagStatus) — we collapse
+    /// it to the worst-active tier for radar rendering.
+    /// </summary>
+    internal enum EHealthStatus
+    {
+        Healthy = 0,
+        Injured,
+        BadlyInjured,
+        Dying,
     }
 
     /// <summary>
@@ -60,7 +74,23 @@
         // ── State (updated each registration tick) ────────────────────────
 
         public bool IsActive;
+
+        /// <summary>
+        /// Live alive/dead state read from <c>ObservedHealthController.IsAlive</c> by the
+        /// periodic health scatter (<see cref="RegisteredPlayers.BatchUpdateHealthStatuses"/>).
+        /// Starts <c>true</c> at registration; flips to <c>false</c> the moment the
+        /// observed-side health controller reports death — does NOT require the player
+        /// to leave the registered list (so corpses on the floor render as dead).
+        /// </summary>
         public bool IsAlive;
+
+        /// <summary>
+        /// Bucketed health status derived from <c>ObservedHealthController.HealthStatus</c>'s
+        /// ETagStatus bitmask. <see cref="EHealthStatus.Healthy"/> until the periodic
+        /// health scatter resolves a real value. Independent of <see cref="IsAlive"/>:
+        /// a "Dying" player is still alive.
+        /// </summary>
+        public EHealthStatus HealthStatus = EHealthStatus.Healthy;
 
         /// <summary>True when the position has been successfully computed at least once.</summary>
         public bool HasValidPosition;
@@ -75,6 +105,24 @@
 
         /// <summary>Pitch angle in degrees.</summary>
         public float RotationPitch;
+
+        /// <summary>
+        /// Stable world position for top-down rendering (radar map dot, distance/height
+        /// labels). Prefers the <c>HumanPelvis</c> bone from the skeleton scatter (body
+        /// center — doesn't swing with stance/ADS like <see cref="Position"/> does,
+        /// because that field tracks <c>_playerLookRaycastTransform</c> which moves to
+        /// the scope/hand/eye depending on weapon state). Falls back to
+        /// <see cref="Position"/> when the skeleton hasn't been resolved yet (early
+        /// frames, distant players) so existing behaviour is preserved.
+        /// </summary>
+        public Vector3 MapPosition
+        {
+            get
+            {
+                var pelvis = Skeleton?.GetBonePosition(Bones.HumanPelvis);
+                return pelvis ?? Position;
+            }
+        }
 
         // ── Transform cache (managed by RegisteredPlayers) ────────────────
 
@@ -117,6 +165,20 @@
 
         /// <summary>Cached ArmBand slot pointer — avoids re-scanning the equipment slots array on every TeamID read.</summary>
         internal ulong ArmBandSlotAddr;
+
+        /// <summary>
+        /// Cached pointer to the player's <c>ObservedHealthController</c>. Resolved once
+        /// during discovery (or on the next periodic refresh) and reused by the periodic
+        /// IsAlive / HealthStatus scatter. Zero until resolved — periodic batch skips
+        /// players whose OHC is still unresolved.
+        /// </summary>
+        internal ulong ObservedHealthControllerAddr;
+
+        /// <summary>
+        /// Back-off tick for re-resolving <see cref="ObservedHealthControllerAddr"/> after
+        /// a transient failure (e.g. controller still null during respawn).
+        /// </summary>
+        internal long NextOhcResolveTick;
 
         // ── Skeleton / bone data (written by camera worker) ───────────────
 

@@ -107,7 +107,7 @@ namespace eft_dma_radar.Arena.GameWorld.Players
                     return null;
                 }
 
-                if (Log.EnableDebugLogging)
+                if (Log.EnableIl2CppDump)
                     Il2CppDumper.DumpClassFields(playerBody, $"Skeleton.PlayerBody @ 0x{playerBase:X}");
                 // Step 2 — SkeletonRootJoint pointer
                 if (!Memory.TryReadPtr(playerBody + Offsets.PlayerBody.SkeletonRootJoint, out var skeletonRoot, false))
@@ -117,9 +117,9 @@ namespace eft_dma_radar.Arena.GameWorld.Players
                     return null;
                 }
 
-                // Dump the DizSkinningSkeleton only in debug mode — avoids ReadUnityString
-                // ArgumentOutOfRangeException storms during normal play.
-                if (Log.EnableDebugLogging)
+                // Dump the DizSkinningSkeleton only when the IL2CPP dumper is opted in —
+                // avoids ReadUnityString ArgumentOutOfRangeException storms during normal play.
+                if (Log.EnableIl2CppDump)
                 {
                     Il2CppDumper.DumpClassFields(playerBody, $"Skeleton.PlayerBody @ 0x{playerBase:X}");
                     Il2CppDumper.DumpClassFields(skeletonRoot, $"Skeleton.DizSkinningSkeleton @ 0x{playerBase:X}");
@@ -285,11 +285,17 @@ namespace eft_dma_radar.Arena.GameWorld.Players
                             continue;
 
                         var worldPos = TrsX.ComputeWorldPosition(vertices, indices, entry.TransformIndex);
-                        if (float.IsFinite(worldPos.X) && float.IsFinite(worldPos.Y) && float.IsFinite(worldPos.Z))
+                        if (IsSaneWorldPos(worldPos))
                         {
                             entry.WorldPosition = worldPos;
                             entry.HasPosition = true;
                         }
+                        // Else: keep the previous WorldPosition. One bad tick (typically a
+                        // Y≈-999 sentinel from a freshly-respawned hierarchy, or non-finite
+                        // garbage during a DMA race) used to be projected raw and produced
+                        // 100+ px screen jumps in the rendered skeleton / bone-anchored
+                        // ESP box. Keeping last-known-good for one tick is invisible to
+                        // the eye and the next valid scatter overwrites it ~7ms later.
                     }
                     finally
                     {
@@ -441,6 +447,27 @@ namespace eft_dma_radar.Arena.GameWorld.Players
             HasScreenData = true;
             return true;
         }
+
+        /// <summary>
+        /// Validates a freshly-read bone world position. Rejects:
+        /// <list type="bullet">
+        ///   <item>NaN / Infinity components (DMA race or unmapped page).</item>
+        ///   <item>Y ≤ -500 — the "not placed in scene" sentinel BSG writes for hierarchies
+        ///     that haven't been initialised yet (mirrors the check used for
+        ///     <c>player.Position</c> in <c>RegisteredPlayers.Realtime</c>).</item>
+        ///   <item>|X| or |Z| ≥ 5000 — Arena maps are &lt; 1000 m wide; anything past 5 km
+        ///     of origin is a runaway transform-chain walk.</item>
+        /// </list>
+        /// Cheap enough to inline; keeps every bad scatter result out of the
+        /// <see cref="ScreenBuffer"/> and prevents the visible spike that produced
+        /// 168 px head-bone jumps in the stability log.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool IsSaneWorldPos(in Vector3 p)
+            => float.IsFinite(p.X) && float.IsFinite(p.Y) && float.IsFinite(p.Z)
+               && p.Y > -500f
+               && MathF.Abs(p.X) < 5000f
+               && MathF.Abs(p.Z) < 5000f;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private Vector2? ProjectBone(Bones bone, Vector2 contentMin, int widgetW, int widgetH)

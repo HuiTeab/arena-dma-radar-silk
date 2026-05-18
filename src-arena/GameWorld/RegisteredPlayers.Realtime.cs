@@ -419,9 +419,10 @@ namespace eft_dma_radar.Arena.GameWorld
                 return false;
             }
 
-            // Dump the lookTransform managed object in debug mode only — avoids ArgumentOutOfRangeException
-            // storms from ReadUnityString during IL2CPP field enumeration in normal play.
-            if (Log.EnableDebugLogging)
+            // Dump the lookTransform managed object only when the IL2CPP dumper is opted in —
+            // avoids ArgumentOutOfRangeException storms from ReadUnityString during IL2CPP
+            // field enumeration in normal play, and keeps general debug logging usable.
+            if (Log.EnableIl2CppDump)
                 Il2CppDumper.DumpClassFields(lookTransform, $"TryInitTransform.LookTransform '{player.Name}' @ 0x{player.Base:X}");
 
             // Step 2: +0x10 gives the C++ Transform / managed wrapper

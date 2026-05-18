@@ -400,34 +400,59 @@ namespace eft_dma_radar.Arena.UI
             var skel = player.Skeleton;
             bool haveSkel = skel is not null && skel.IsInitialized;
 
-            // Player.Position is the rig root (feet level) and is updated from the
-            // transform hierarchy every realtime tick. It's the most STABLE Y source
-            // we have — using bone feet here causes the box to oscillate vertically
-            // each footstep (the lower foot alternates L↔R) and again whenever a
-            // bone briefly disagrees with realtime (mid-respawn scatter races).
+            // Derive head and feet from the SAME skeleton scatter snapshot as the
+            // bones we draw below — otherwise the box & name read player.Position
+            // from a separate realtime scatter and lag/jitter relative to the
+            // bones (visible as a jumpy box around a smooth skeleton).
             //
-            // Strategy:
-            //   • feet  = player.Position  (always, stable across animation frames)
-            //   • head  = feet + (0, headHeight, 0)
-            //       where headHeight comes from the bone head Y when it's within
-            //       a sane range, otherwise the PlayerHeightFallback constant.
-            // Result: the bounding box stops flickering up/down with each step
-            // while still shrinking when the player is crouched/prone. The
-            // skeleton drawing (DrawBones below) still uses per-bone positions
-            // so it tracks animation faithfully — only the BOX is anchored.
-            Vector3 feet = player.Position;
-            float headHeight = PlayerHeightFallback;
+            // Feet stability: pick the LOWER of L/R foot bones rather than letting
+            // them alternate each step. The lower foot is the one on the ground,
+            // which doesn't oscillate vertically with the walking animation.
+            //
+            // Fallback chain when bones are missing:
+            //   head  → HumanHead bone → player.Position (eye-level)
+            //   feet  → min(L,R)Foot → pelvis - 0.95 → eye − PlayerHeightFallback
+            // A final sanity check (0.5..3.0 m height delta) rejects garbage.
+            Vector3 eye = player.Position;
+            Vector3 head;
+            Vector3 feet;
+
             if (haveSkel)
             {
-                var hb = skel!.GetBonePosition(Bones.HumanHead);
-                if (hb.HasValue && IsFinite(hb.Value))
+                var headBone = skel!.GetBonePosition(Bones.HumanHead);
+                var lFoot    = skel.GetBonePosition(Bones.HumanLFoot);
+                var rFoot    = skel.GetBonePosition(Bones.HumanRFoot);
+                var pelvis   = skel.GetBonePosition(Bones.HumanPelvis);
+
+                head = (headBone.HasValue && IsFinite(headBone.Value))
+                    ? headBone.Value
+                    : eye;
+
+                Vector3? footCandidate = null;
+                if (lFoot.HasValue && IsFinite(lFoot.Value) &&
+                    rFoot.HasValue && IsFinite(rFoot.Value))
+                    footCandidate = lFoot.Value.Y < rFoot.Value.Y ? lFoot.Value : rFoot.Value;
+                else if (lFoot.HasValue && IsFinite(lFoot.Value))
+                    footCandidate = lFoot.Value;
+                else if (rFoot.HasValue && IsFinite(rFoot.Value))
+                    footCandidate = rFoot.Value;
+                else if (pelvis.HasValue && IsFinite(pelvis.Value))
+                    footCandidate = new Vector3(pelvis.Value.X, pelvis.Value.Y - 0.95f, pelvis.Value.Z);
+
+                feet = footCandidate ?? new Vector3(eye.X, eye.Y - PlayerHeightFallback, eye.Z);
+
+                float heightDiff = head.Y - feet.Y;
+                if (heightDiff < 0.5f || heightDiff > 3.0f)
                 {
-                    float hd = hb.Value.Y - feet.Y;
-                    if (hd >= 1.0f && hd <= 2.5f) // sane crouched..standing range
-                        headHeight = hd;
+                    head = eye;
+                    feet = new Vector3(eye.X, eye.Y - PlayerHeightFallback, eye.Z);
                 }
             }
-            Vector3 head = new Vector3(feet.X, feet.Y + headHeight, feet.Z);
+            else
+            {
+                head = eye;
+                feet = new Vector3(eye.X, eye.Y - PlayerHeightFallback, eye.Z);
+            }
 
             if (!CameraManager.WorldToScreen(ref head, out var headScr, true, true)) return;
             if (!CameraManager.WorldToScreen(ref feet, out var feetScr, true, true)) return;

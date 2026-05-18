@@ -22,6 +22,14 @@ namespace eft_dma_radar.Arena.Config
         [JsonPropertyName("debugLogging")]
         public bool DebugLogging { get; set; } = false;
 
+        /// <summary>
+        /// Enables the IL2CPP class-field dumper output (per-player floods at discovery /
+        /// transform reinit / skeleton init). Off by default — only useful when diagnosing
+        /// IL2CPP layout drift after a game update. Independent of <see cref="DebugLogging"/>.
+        /// </summary>
+        [JsonPropertyName("il2cppDump")]
+        public bool Il2CppDump { get; set; } = false;
+
         // ── Window ────────────────────────────────────────────────────────────
 
         [JsonPropertyName("windowWidth")]

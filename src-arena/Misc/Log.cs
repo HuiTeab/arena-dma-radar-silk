@@ -55,6 +55,15 @@ namespace eft_dma_radar.Arena.Misc
         public static AppLogLevel MinimumLogLevel { get; set; } = AppLogLevel.Info;
         public static bool EnableDebugLogging { get; set; } = false;
 
+        /// <summary>
+        /// Gates the IL2CPP dumper output (per-player <c>DumpClassFields</c> floods at discovery,
+        /// transform reinit, skeleton init, etc.). Separated from <see cref="EnableDebugLogging"/>
+        /// because the aimview stability metrics and other debug-level traces are useful day-to-day,
+        /// while the dumper output is only wanted when actively diagnosing IL2CPP layout drift
+        /// after a game update. Enable via <c>il2cppDump=true</c> in config or <c>-il2cppdump</c>.
+        /// </summary>
+        public static bool EnableIl2CppDump { get; set; } = false;
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static bool IsEnabled(AppLogLevel level) =>
             level >= MinimumLogLevel && (level != AppLogLevel.Debug || EnableDebugLogging);

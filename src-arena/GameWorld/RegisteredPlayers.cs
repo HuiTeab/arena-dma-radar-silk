@@ -196,7 +196,7 @@ namespace eft_dma_radar.Arena.GameWorld
             _players[mainPlayerPtr] = player;
             Log.WriteLine($"[RegisteredPlayers] LocalPlayer: {player}");
 
-            if (Log.EnableDebugLogging)
+            if (Log.EnableIl2CppDump)
             {
                 Il2CppDumper.DumpClassFields(mainPlayerPtr, $"LocalPlayer (EFT.Player) @ 0x{mainPlayerPtr:X}");
                 // Dump MovementContext sub-object for rotation chain verification
@@ -436,7 +436,12 @@ namespace eft_dma_radar.Arena.GameWorld
                     }
 
                     kvp.Value.IsActive = true;
-                    kvp.Value.IsAlive = true;
+                    // Only force IsAlive=true on a missing→present transition. Outside of
+                    // that, the periodic OHC scatter (BatchUpdateHealthStatuses) is the
+                    // source of truth — otherwise a player who just died but is still in
+                    // the registered list would flip back to alive every registration tick.
+                    if (kvp.Value.MissingTicks > 0)
+                        kvp.Value.IsAlive = true;
                     kvp.Value.MissingTicks = 0;
 
                     // Resolve TeamID lazily for observed players whose armband wasn't readable
@@ -528,6 +533,17 @@ namespace eft_dma_radar.Arena.GameWorld
             }
             var snap = _activeList.Count == 0 ? _emptyPlayers : _activeList.ToArray();
             Volatile.Write(ref _activeSnapshot, snap);
+
+            // Periodic IsAlive + HealthStatus scatter — self-rate-limited to 250 ms.
+            // Lets us mark observed players dead the moment their OHC flips, rather
+            // than waiting for them to leave the registered list (Arena keeps corpses
+            // in the list for several seconds during a round).
+            try { BatchUpdateHealthStatuses(); }
+            catch (Exception ex)
+            {
+                Log.WriteRateLimited(AppLogLevel.Warning, "rp_health_batch", TimeSpan.FromSeconds(5),
+                    $"[RegisteredPlayers] BatchUpdateHealthStatuses failed: {ex.Message}");
+            }
         }
 
         // ── Shared back-off schedulers ────────────────────────────────────────

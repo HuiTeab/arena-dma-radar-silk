@@ -67,6 +67,39 @@ namespace SDK
             public static uint Culling            = 0x100; // <Culling>k__BackingField
         }
 
+        // ── ObservedHealthController ─────────────────────────────────────────
+        // Hangs off ObservedPlayerController.HealthController. Provides the live
+        // alive/dead state and a status bitmask. Verified from il2cpp dump:
+        //   [0x10] valuetype HealthStatus = 0x... (ETagStatus bitmask, int32)
+        //   [0x14] bool      <IsAlive>k__BackingField
+        //   [0x18] class     _player                          (back-ref for verification)
+        public readonly partial struct ObservedHealthController
+        {
+            public static uint HealthStatus = 0x10;
+            public static uint IsAlive      = 0x14;
+            public static uint Player       = 0x18;
+        }
+
+        // ── BifacialTransform ────────────────────────────────────────────────
+        // The "stable root" transform exposed by ObservedPlayerStateContext._playerTransform
+        // (offset 0x98) AND by PlayerBones.BodyTransform (offset 0x180) — both point at the
+        // same managed EFT.BifacialTransform instance. Wraps a UnityEngine.Transform at
+        // offset 0x10 ("Original"); walking that through TrsX gives the **player's body
+        // root in world space**, which does NOT move when the player switches weapons,
+        // aims down sights, or fires — unlike _playerLookRaycastTransform, which moves
+        // to the scope/eye/hand depending on weapon state and is the empirically observed
+        // cause of position jitter (see stability-...-players.csv: pos.Y alternates between
+        // foot-level and head-level for the same player).
+        //
+        // NOT WIRED IN YET — listed for future stable-position work. The change requires
+        // updating TryInitTransform to start from BifacialTransform.Original instead of
+        // _playerLookRaycastTransform; downstream realtime + skeleton code is already
+        // transform-source agnostic via TrsX.ComputeWorldPosition.
+        public readonly partial struct BifacialTransform
+        {
+            public static uint Original = 0x10; // UnityEngine.Transform pointer
+        }
+
         // ── Inventory chain (for armband-based TeamID detection) ─────────────
         public readonly partial struct InventoryController
         {

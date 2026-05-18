@@ -179,7 +179,7 @@ namespace eft_dma_radar.Arena.GameWorld
 
                     Interlocked.Exchange(ref _lastDisposedBase, 0);
                     Log.WriteLine($"[LocalGameWorld] Found live GameWorld @ 0x{gameWorld:X}, map = '{mapId}' ({MapNames.GetDisplayName(mapId)}), players = {regCount}");
-                    if (Log.EnableDebugLogging)
+                    if (Log.EnableIl2CppDump)
                         Il2CppDumper.DumpClassFields(gameWorld, "ClientLocalGameWorld (match start)");
                     return new LocalGameWorld(gameWorld, mapId, ct);
                 }

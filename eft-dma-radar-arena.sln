@@ -1,0 +1,59 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "lib", "lib", "{857608AB-FB1E-4FBA-8308-210E4AF342DE}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VmmSharpEx", "lib\VmmSharpEx\VmmSharpEx.csproj", "{8D674A10-0D87-403B-8A31-E60BA7E322F5}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src-arena", "src-arena", "{A57D6537-475C-4804-B652-5BC1AAB7F4F8}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "arena-dma-radar", "src-arena\arena-dma-radar.csproj", "{7F018FFB-A3C1-4A95-9042-6C6F149EBE8D}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Debug|x64 = Debug|x64
+		Debug|x86 = Debug|x86
+		Release|Any CPU = Release|Any CPU
+		Release|x64 = Release|x64
+		Release|x86 = Release|x86
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{8D674A10-0D87-403B-8A31-E60BA7E322F5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8D674A10-0D87-403B-8A31-E60BA7E322F5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8D674A10-0D87-403B-8A31-E60BA7E322F5}.Debug|x64.ActiveCfg = Debug|x64
+		{8D674A10-0D87-403B-8A31-E60BA7E322F5}.Debug|x64.Build.0 = Debug|x64
+		{8D674A10-0D87-403B-8A31-E60BA7E322F5}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{8D674A10-0D87-403B-8A31-E60BA7E322F5}.Debug|x86.Build.0 = Debug|Any CPU
+		{8D674A10-0D87-403B-8A31-E60BA7E322F5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8D674A10-0D87-403B-8A31-E60BA7E322F5}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8D674A10-0D87-403B-8A31-E60BA7E322F5}.Release|x64.ActiveCfg = Release|x64
+		{8D674A10-0D87-403B-8A31-E60BA7E322F5}.Release|x64.Build.0 = Release|x64
+		{8D674A10-0D87-403B-8A31-E60BA7E322F5}.Release|x86.ActiveCfg = Release|Any CPU
+		{8D674A10-0D87-403B-8A31-E60BA7E322F5}.Release|x86.Build.0 = Release|Any CPU
+		{7F018FFB-A3C1-4A95-9042-6C6F149EBE8D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7F018FFB-A3C1-4A95-9042-6C6F149EBE8D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7F018FFB-A3C1-4A95-9042-6C6F149EBE8D}.Debug|x64.ActiveCfg = Debug|x64
+		{7F018FFB-A3C1-4A95-9042-6C6F149EBE8D}.Debug|x64.Build.0 = Debug|x64
+		{7F018FFB-A3C1-4A95-9042-6C6F149EBE8D}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{7F018FFB-A3C1-4A95-9042-6C6F149EBE8D}.Debug|x86.Build.0 = Debug|Any CPU
+		{7F018FFB-A3C1-4A95-9042-6C6F149EBE8D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7F018FFB-A3C1-4A95-9042-6C6F149EBE8D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7F018FFB-A3C1-4A95-9042-6C6F149EBE8D}.Release|x64.ActiveCfg = Release|x64
+		{7F018FFB-A3C1-4A95-9042-6C6F149EBE8D}.Release|x64.Build.0 = Release|x64
+		{7F018FFB-A3C1-4A95-9042-6C6F149EBE8D}.Release|x86.ActiveCfg = Release|Any CPU
+		{7F018FFB-A3C1-4A95-9042-6C6F149EBE8D}.Release|x86.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{8D674A10-0D87-403B-8A31-E60BA7E322F5} = {857608AB-FB1E-4FBA-8308-210E4AF342DE}
+		{7F018FFB-A3C1-4A95-9042-6C6F149EBE8D} = {A57D6537-475C-4804-B652-5BC1AAB7F4F8}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {7AC0B16E-13A8-4F8C-8E92-9C0D3E3B71F8}
+	EndGlobalSection
+EndGlobal

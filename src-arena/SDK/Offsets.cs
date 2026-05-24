@@ -213,7 +213,7 @@ namespace SDK
         }
 
         // ── Diz.Skinning.Skeleton ──────────────────────────────────────────
-        // EFT-side: <_values>k__BackingField at 0x30 — verified against silk reference.
+        // <_values>k__BackingField at 0x30 — verified against live readings.
         public readonly partial struct DizSkinningSkeleton
         {
             public static uint _values = 0x30;
@@ -303,7 +303,7 @@ namespace SDK
     }
 
     // ── Arena Armband -> TeamID mapping ──────────────────────────────────────
-    // Mirrors the reference example; values are stable template GUIDs.
+    // Values are stable template GUIDs from the Arena content database.
     public enum ArmbandColorType
     {
         red     = 0,

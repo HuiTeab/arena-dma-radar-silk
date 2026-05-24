@@ -70,7 +70,7 @@ namespace eft_dma_radar.Arena.GameWorld
                 player.RotationPitch = rot.Y;
             }
 
-            // Position — TrsX[] read + parent-walk world position compute (silk6 pattern).
+            // Position — TrsX[] read + parent-walk world position compute.
             // Replaces the prior single-Vector3 read of the hierarchy's cached worldPos slot,
             // which exhibited multi-second stale freezes on Arena and required a separate
             // bone-derived fallback path. Walking the TRS chain matches what Unity does
@@ -191,8 +191,8 @@ namespace eft_dma_radar.Arena.GameWorld
                     // Fast re-init: if TransformInternal is still readable but Hierarchy
                     // → Vertices/Indices have churned (common after a respawn/scene swap),
                     // re-resolve those two pointers without redoing the full lookTransform
-                    // chain. Mirrors silk6's TryReinitFromTransformInternal — saves ~4 DMA
-                    // hops and recovers the same tick instead of waiting for full reinit.
+                    // chain. Saves ~4 DMA hops and recovers the same tick instead of
+                    // waiting for a full reinit.
                     if (player.ConsecutiveErrors == 2
                         && TryReinitFromTransformInternal(player))
                     {
@@ -447,9 +447,10 @@ namespace eft_dma_radar.Arena.GameWorld
 
             // Step 4: resolve the actual TrsX[] vertices and parent-indices arrays so the
             // realtime worker can compute the world position by walking the parent chain
-            // every tick (matches silk6 / Skeleton). Reading the cached worldPos slot
-            // directly (h+0xB0) was simpler but suffered multi-second stale freezes on
-            // Arena because Unity does not refresh that slot every frame for every actor.
+            // every tick (same approach used for the skeleton). Reading the cached
+            // worldPos slot directly (h+0xB0) was simpler but suffered multi-second
+            // stale freezes on Arena because Unity does not refresh that slot every
+            // frame for every actor.
             if (!Memory.TryReadPtr(hierarchy + TransformHierarchy.VerticesOffset, out var verticesAddr, false)
                 || !verticesAddr.IsValidVirtualAddress())
             {
@@ -574,7 +575,7 @@ namespace eft_dma_radar.Arena.GameWorld
         /// skipping the full lookTransform → managed-wrapper chain. Returns true if the
         /// player's <c>VerticesAddr</c> / <c>CachedIndices</c> were refreshed and a finite
         /// world position was computed; the realtime worker will pick up the new pointers
-        /// on the next tick. Mirrors silk6's <c>TryReinitFromTransformInternal</c>.
+        /// on the next tick.
         /// </summary>
         private static bool TryReinitFromTransformInternal(Player player)
         {

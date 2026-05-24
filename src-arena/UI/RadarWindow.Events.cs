@@ -158,6 +158,35 @@ namespace eft_dma_radar.Arena.UI
                     if (Log.EnableDebugLogging)
                         Memory.CurrentGameWorld?.DumpAll();
                     break;
+                case Key.F9:
+                    Log.WriteLine("[ArenaProgram] F9: running PhysX SDK pointer probe...");
+                    eft_dma_radar.Arena.Unity.PhysX.PhysXProbe.Run();
+                    break;
+                case Key.F10:
+                    {
+                        var gw = Memory.CurrentGameWorld;
+                        if (gw is null)
+                            Log.WriteLine("[ArenaProgram] F10: no active match — vischeck cache cannot build.");
+                        else
+                        {
+                            Log.WriteLine($"[ArenaProgram] F10: triggering vischeck cache build for '{gw.MapID}'...");
+                            eft_dma_radar.Arena.Unity.PhysX.SceneCache.TriggerBuild(gw.MapID);
+                            if (!eft_dma_radar.Arena.Unity.PhysX.VisibilityWorker.Enabled)
+                            {
+                                eft_dma_radar.Arena.Unity.PhysX.VisibilityWorker.Start();
+                                Log.WriteLine("[ArenaProgram] F10: visibility worker also started.");
+                            }
+                        }
+                        break;
+                    }
+                case Key.F11:
+                    eft_dma_radar.Arena.Unity.PhysX.VisCheckDebugWindow.Toggle();
+                    Log.WriteLine($"[ArenaProgram] F11: VisCheck debug window {(eft_dma_radar.Arena.Unity.PhysX.VisCheckDebugWindow.IsVisible ? "shown" : "hidden")}.");
+                    break;
+                case Key.F12:
+                    eft_dma_radar.Arena.Unity.PhysX.CacheViewWindow.Toggle();
+                    Log.WriteLine($"[ArenaProgram] F12: Cache View window {(eft_dma_radar.Arena.Unity.PhysX.CacheViewWindow.IsVisible ? "shown" : "hidden")}.");
+                    break;
             }
         }
     }

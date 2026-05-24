@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.IO;
 
 namespace eft_dma_radar.Arena.Config
@@ -144,6 +145,40 @@ namespace eft_dma_radar.Arena.Config
         /// </summary>
         [JsonPropertyName("espMonitorIndex")]
         public int EspMonitorIndex { get; set; } = 0;
+
+        // ── Visibility Check ──────────────────────────────────────────────────
+
+        /// <summary>
+        /// Unity layers (one-hot bit per layer) treated as see-through by the PhysX raycaster.
+        /// Default: 1&lt;&lt;16 — player character colliders, so enemy A's body never blocks the
+        /// sightline to enemy B.
+        /// </summary>
+        [JsonPropertyName("visCheckSeeThroughLayerMask")]
+        public uint VisCheckSeeThroughLayerMask { get; set; } = 1u << 16;
+
+        /// <summary>Global actor name substrings classified as see-through on every map.</summary>
+        [JsonPropertyName("visCheckGlobalNamePatterns")]
+        public string[] VisCheckGlobalNamePatterns { get; set; } = ["Glass", "Cube ("];
+
+        /// <summary>Per-map actor name patterns. Key = MapId (case-insensitive).</summary>
+        [JsonPropertyName("visCheckMapNamePatterns")]
+        public Dictionary<string, string[]> VisCheckMapNamePatterns { get; set; } = new();
+
+        /// <summary>Max ray cast distance (metres). Players beyond this default to visible.</summary>
+        [JsonPropertyName("visCheckMaxRayDistance")]
+        public float VisCheckMaxRayDistance { get; set; } = 200f;
+
+        /// <summary>Cast a ray to the enemy's head bone.</summary>
+        [JsonPropertyName("visCheckBoneHead")]
+        public bool VisCheckBoneHead { get; set; } = true;
+
+        /// <summary>Cast a ray to the enemy's chest (spine3) bone.</summary>
+        [JsonPropertyName("visCheckBoneChest")]
+        public bool VisCheckBoneChest { get; set; } = true;
+
+        /// <summary>Cast a ray to the enemy's pelvis bone.</summary>
+        [JsonPropertyName("visCheckBonePelvis")]
+        public bool VisCheckBonePelvis { get; set; } = true;
 
         // ── Persistence ───────────────────────────────────────────────────────
 

@@ -53,7 +53,7 @@ namespace eft_dma_radar.Arena.UI
         private static GCHandle _iconGlyphRangesHandle;
 
         // Icon glyph ranges for the merged symbol font — null-terminated pairs of (first, last).
-        // Mirrors the silk implementation; ImGui.NET uses 16-bit glyphs so non-BMP emoji cannot render.
+        // ImGui.NET uses 16-bit glyphs so non-BMP emoji cannot render.
         private static readonly ushort[] _iconGlyphRanges =
         [
             0x00A0, 0x00FF, // Latin-1 supplement (·, etc.)

@@ -1,4 +1,5 @@
 using System.Runtime.Versioning;
+using eft_dma_radar.Arena.Unity.PhysX;
 
 [assembly: AssemblyTitle("Arena DMA Radar")]
 [assembly: AssemblyProduct("Arena DMA Radar")]
@@ -36,6 +37,10 @@ namespace eft_dma_radar.Arena
                 Log.WriteLine("[ArenaProgram] Memory module initialized — waiting for game...");
 
                 MapManager.ModuleInit();
+
+                // Apply persisted vischeck classifier settings (layer mask, name patterns, bone toggles).
+                VisibilityClassifier.LoadFromConfig(Config);
+                VisibilityWorker.LoadFromConfig(Config);
 
                 // Launch minimal radar window (blocks until user closes it).
                 eft_dma_radar.Arena.UI.RadarWindow.Run();

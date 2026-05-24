@@ -399,8 +399,8 @@ namespace eft_dma_radar.Arena.GameWorld
 
         /// <summary>
         /// On-demand match snapshot (JSON + IL2CPP class hierarchy) written to
-        /// <c>&lt;exe&gt;\dumps\</c>. Mirrors <c>src-silk</c>'s MatchDumper —
-        /// runs entirely on background threads, returns immediately.
+        /// <c>&lt;exe&gt;\dumps\</c>. Runs entirely on background threads,
+        /// returns immediately.
         /// </summary>
         public void DumpMatchNow() => MatchDumper.DumpAsync(this);
 

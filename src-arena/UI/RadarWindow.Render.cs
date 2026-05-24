@@ -216,7 +216,15 @@ namespace eft_dma_radar.Arena.UI
 
         private static void DrawPlayer(SKCanvas canvas, Player p, SKPoint sp, bool isLocal, Vector3 localPos, Vector3 pMapPos)
         {
-            var (fill, text) = GetPlayerPaints(p);
+            var (baseFill, baseText) = GetPlayerPaints(p);
+
+            // Visibility dimming: an enemy whose sightline is currently blocked
+            // by geometry gets the muted-alpha sibling. Local player and dead
+            // players are always full brightness. The VisibilityWorker writes
+            // IsVisible once per tick; render here just reads it lock-free.
+            bool blocked = !isLocal && p.IsAlive && !p.IsVisible;
+            var fill = blocked ? SKPaints.Dimmed(baseFill) : baseFill;
+            var text = blocked ? SKPaints.Dimmed(baseText) : baseText;
 
             float r = isLocal ? 7f : 5.5f;
 
@@ -243,9 +251,9 @@ namespace eft_dma_radar.Arena.UI
                 float tx = sp.X + r + 3f;
                 float ty = sp.Y - r;
 
-                // Silk-style info suffix: signed height (meters) + distance (meters).
+                // Info suffix: signed height (meters) + distance (meters).
                 // Neo Sans Std lacks the ▲/▼ glyphs (they render as tofu),
-                // so we use ASCII signed numbers, matching the Silk radar presentation.
+                // so we use ASCII signed numbers instead.
                 // Use the same stable map-pos source as the dot so the numbers don't
                 // jump 1.5 m when the player's look raycast switches eye↔foot.
                 string infoTag = string.Empty;
@@ -348,6 +356,8 @@ namespace eft_dma_radar.Arena.UI
                 DrawMainMenuBar();
                 DrawStatusBar();
                 DrawAimviewWidget();
+                eft_dma_radar.Arena.Unity.PhysX.VisCheckDebugWindow.Draw();
+                eft_dma_radar.Arena.Unity.PhysX.CacheViewWindow.Draw();
             }
             finally
             {

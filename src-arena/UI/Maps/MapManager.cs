@@ -18,7 +18,7 @@ namespace eft_dma_radar.Arena.UI.Maps
         private static volatile bool _isLoading;
         private static readonly Lock _lock = new();
 
-        /// <summary>Maps directory in the output tree (mirrors silk layout).</summary>
+        /// <summary>Maps directory in the output tree (<c>wwwroot/Maps</c>).</summary>
         private static string MapsDir =>
             Path.Combine(AppContext.BaseDirectory, "wwwroot", "Maps");
 

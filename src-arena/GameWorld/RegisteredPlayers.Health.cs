@@ -6,7 +6,7 @@ using VmmSharpEx.Scatter;
 namespace eft_dma_radar.Arena.GameWorld
 {
     /// <summary>
-    /// Periodic alive/dead + health-status scatter, ported from the silk pattern.
+    /// Periodic alive/dead + health-status scatter.
     /// Reads <c>ObservedHealthController.IsAlive</c> and the
     /// <c>ObservedHealthController.HealthStatus</c> ETagStatus bitmask for every
     /// observed player whose OHC has been resolved, in a single scatter pass.

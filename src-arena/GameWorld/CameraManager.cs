@@ -364,16 +364,23 @@ namespace eft_dma_radar.Arena.GameWorld
             ulong vmAddr = FPSCamera + Camera.ViewMatrix;
 
             using var scatter = Memory.GetScatter(VmmFlags.NOCACHE);
+            scatter.PrepareReadValue<Matrix4x4>(vmAddr);
             scatter.PrepareReadValue<float>(FPSCamera + Camera.FOV);
             scatter.PrepareReadValue<float>(FPSCamera + Camera.AspectRatio);
             scatter.Execute();
 
             bool vmOk = false, fovOk = false, arOk = false;
 
-            if (scatter.ReadValue<Matrix4x4>(vmAddr, out var vm))
+            // Validate BEFORE writing to the cached basis — a half-page-fault read
+            // can return true with all-zero / NaN bytes, and Update() would then
+            // poison the live viewMatrix used by W2S and silently freeze WorldPosition
+            // at garbage values. The previous code wrote first and validated second.
+            if (scatter.ReadValue<Matrix4x4>(vmAddr, out var vm)
+                && IsFiniteMatrix(in vm)
+                && !(vm.M11 == 0f && vm.M22 == 0f && vm.M33 == 0f))
             {
                 _viewMatrix.Update(ref vm);
-                vmOk = !float.IsNaN(vm.M11) && !(vm.M11 == 0f && vm.M22 == 0f && vm.M33 == 0f);
+                vmOk = true;
             }
 
             if (scatter.ReadValue<float>(FPSCamera + Camera.FOV, out var fov) && fov > 1f && fov < 180f)
@@ -411,11 +418,14 @@ namespace eft_dma_radar.Arena.GameWorld
                 Log.WriteRateLimited(AppLogLevel.Warning, "cam_partial", TimeSpan.FromSeconds(5),
                     $"[CameraManager] Partial read — vm={vmOk} fov={fovOk} ar={arOk} (FPSCamera=0x{FPSCamera:X})");
 
-                // All three reads failing usually means the FPS camera was
-                // rebuilt by the game (respawn / map transition). Re-resolve
-                // it from the singleton so we recover automatically.
-                if (!vmOk && !fovOk && !arOk)
-                    TryRefreshFpsCamera();
+                // ANY read failing is enough to suspect the FPS camera was rebuilt
+                // (respawn / map transition). Waiting for all three to fail before
+                // refreshing was the "stuck camera" cause — a freshly-freed camera
+                // often keeps returning a plausible aspect ratio for a while while
+                // the ViewMatrix slot already reads as zeros. Triggering on any
+                // failure lets the 500 ms refresh rate-limit decide cadence
+                // instead of relying on full-block failure detection.
+                TryRefreshFpsCamera();
             }
         }
 
@@ -530,7 +540,7 @@ namespace eft_dma_radar.Arena.GameWorld
         }
 
         /// <summary>
-        /// Multi-path resolver, mirroring the EFT-silk implementation:
+        /// Multi-path resolver — tries two known camera-source paths in order:
         ///   1) <c>EFT.CameraControl.CameraManager.Instance</c> (preferred —
         ///      direct field read, no name scan, gives both FPS + Optic cameras).
         ///   2) Unity <c>AllCameras</c> list + GameObject name search (fallback).

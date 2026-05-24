@@ -127,5 +127,61 @@ namespace eft_dma_radar.Arena.UI
         private static SKPaint NewTextPaint(SKColor color) => NewFillPaint(color);
 
         #endregion
+
+        #region Visibility dimming
+
+        /// <summary>
+        /// Alpha applied to "blocked" (line-of-sight obstructed) player paints.
+        /// 96 / 255 ≈ 38 % — clearly muted but still legible. Tuned by eye on
+        /// the radar dots; ESP box / aimview dots use the same value via
+        /// <see cref="Dimmed"/> so the visual feel is consistent across views.
+        /// </summary>
+        public const byte BlockedAlpha = 96;
+
+        /// <summary>
+        /// Same as <see cref="BlockedAlpha"/> but as a 0..1 float, for ImGui
+        /// drawList colors (aimview) which are 0xAABBGGRR uint format.
+        /// </summary>
+        public const uint BlockedAlphaUint32 = (uint)BlockedAlpha << 24;
+
+        // Cache of "dimmed" paint siblings, keyed by the base paint. We never
+        // mutate the base paints (they're shared, would race), so each unique
+        // input gets one dim variant allocated on first use and re-used for
+        // the rest of the process lifetime. Bounded — there are <30 base paints.
+        private static readonly Dictionary<SKPaint, SKPaint> _dimCache = new();
+        private static readonly object _dimLock = new();
+
+        /// <summary>
+        /// Returns a "dimmed" sibling of <paramref name="paint"/> — same style,
+        /// same color hue, but alpha = <see cref="BlockedAlpha"/>. Used to
+        /// render players whose line-of-sight is currently blocked so they
+        /// stay visible on the radar but visually recede vs. shootable
+        /// enemies.
+        /// <para>
+        /// First call per base paint allocates the dim variant; subsequent
+        /// calls return the cached instance. Thread-safe via a lock on the
+        /// cache; contention is negligible because render is single-threaded
+        /// once the canvas is acquired.
+        /// </para>
+        /// </summary>
+        public static SKPaint Dimmed(SKPaint paint)
+        {
+            lock (_dimLock)
+            {
+                if (_dimCache.TryGetValue(paint, out var dim)) return dim;
+                dim = new SKPaint
+                {
+                    Color       = paint.Color.WithAlpha(BlockedAlpha),
+                    Style       = paint.Style,
+                    StrokeWidth = paint.StrokeWidth,
+                    StrokeCap   = paint.StrokeCap,
+                    IsAntialias = paint.IsAntialias,
+                };
+                _dimCache[paint] = dim;
+                return dim;
+            }
+        }
+
+        #endregion
     }
 }

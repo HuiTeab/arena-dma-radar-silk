@@ -457,7 +457,16 @@ namespace eft_dma_radar.Arena.UI
             if (!CameraManager.WorldToScreen(ref head, out var headScr, true, true)) return;
             if (!CameraManager.WorldToScreen(ref feet, out var feetScr, true, true)) return;
 
-            var (boxPaint, textPaint) = GetPaints(player.Type);
+            var (baseBoxPaint, baseTextPaint) = GetPaints(player.Type);
+
+            // Same visibility dimming as the radar (see RadarWindow.DrawPlayer).
+            // ESP draws on the game world overlay so the effect is most
+            // valuable here — an enemy fully behind cover should clearly look
+            // different from one you can shoot through. Bones are dimmed
+            // alongside the box / text so the silhouette mutes together.
+            bool blocked = !player.IsLocalPlayer && !player.IsVisible;
+            var boxPaint  = blocked ? SKPaints.Dimmed(baseBoxPaint)  : baseBoxPaint;
+            var textPaint = blocked ? SKPaints.Dimmed(baseTextPaint) : baseTextPaint;
 
             float boxH = MathF.Abs(feetScr.Y - headScr.Y);
             float cx = (headScr.X + feetScr.X) * 0.5f;
@@ -476,7 +485,7 @@ namespace eft_dma_radar.Arena.UI
             }
 
             if (haveSkel)
-                DrawBones(canvas, skel!);
+                DrawBones(canvas, skel!, blocked);
 
             string name = player.Name;
             if (!string.IsNullOrEmpty(name))
@@ -539,8 +548,9 @@ namespace eft_dma_radar.Arena.UI
             (Bones.HumanRThigh2, Bones.HumanRFoot),
         };
 
-        private static void DrawBones(SKCanvas canvas, Skeleton skel)
+        private static void DrawBones(SKCanvas canvas, Skeleton skel, bool blocked)
         {
+            var paint = blocked ? SKPaints.Dimmed(_bonePaint) : _bonePaint;
             foreach (var (a, b) in _boneLines)
             {
                 var pa = skel.GetBonePosition(a);
@@ -551,7 +561,7 @@ namespace eft_dma_radar.Arena.UI
                 if (!IsFinite(wa) || !IsFinite(wb)) continue;
                 if (!CameraManager.WorldToScreen(ref wa, out var sa, false, false)) continue;
                 if (!CameraManager.WorldToScreen(ref wb, out var sb, false, false)) continue;
-                canvas.DrawLine(sa.X, sa.Y, sb.X, sb.Y, _bonePaint);
+                canvas.DrawLine(sa.X, sa.Y, sb.X, sb.Y, paint);
             }
         }
 

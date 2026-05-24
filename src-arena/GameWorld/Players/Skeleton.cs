@@ -14,8 +14,9 @@ namespace eft_dma_radar.Arena.GameWorld.Players
     /// world-position reads via DMA scatter, and projects bones to screen space
     /// for the aimview widget.
     /// <para>
-    /// Arena's bones live inside the hierarchy arrays and require the same
-    /// parent-index walk as EFT-silk6 — see <see cref="TrsX.ComputeWorldPosition"/>.
+    /// Arena's bones live inside the hierarchy arrays and require a
+    /// parent-index walk to compute world positions — see
+    /// <see cref="TrsX.ComputeWorldPosition"/>.
     /// </para>
     /// <para>
     /// The aimview widget consumes <see cref="ScreenBuffer"/> (26 points = 13 line
@@ -28,7 +29,7 @@ namespace eft_dma_radar.Arena.GameWorld.Players
         /// <summary>Number of line-segment endpoints in the screen buffer (13 × 2).</summary>
         public const int JOINTS_COUNT = 26;
 
-        /// <summary>All 16 skeleton bones used for drawing (mirrors silk order).</summary>
+        /// <summary>All 16 skeleton bones used for drawing.</summary>
         private static readonly Bones[] _allBones =
         [
             Bones.HumanHead,
@@ -453,7 +454,7 @@ namespace eft_dma_radar.Arena.GameWorld.Players
         /// <list type="bullet">
         ///   <item>NaN / Infinity components (DMA race or unmapped page).</item>
         ///   <item>Y ≤ -500 — the "not placed in scene" sentinel BSG writes for hierarchies
-        ///     that haven't been initialised yet (mirrors the check used for
+        ///     that haven't been initialised yet (same check as
         ///     <c>player.Position</c> in <c>RegisteredPlayers.Realtime</c>).</item>
         ///   <item>|X| or |Z| ≥ 5000 — Arena maps are &lt; 1000 m wide; anything past 5 km
         ///     of origin is a runaway transform-chain walk.</item>

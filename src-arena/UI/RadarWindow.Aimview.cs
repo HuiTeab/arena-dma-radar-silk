@@ -10,7 +10,7 @@ namespace eft_dma_radar.Arena.UI
     /// player's first-person perspective. Supports two projection modes:
     ///   * Advanced: uses the live game ViewMatrix via <see cref="CameraManager.WorldToScreen"/>.
     ///   * Synthetic: builds a forward/right/up basis from local player yaw/pitch.
-    /// Mirrors the EFT Silk AimviewWidget (simplified — players only, no loot/skeletons).
+    /// Players only — no loot or skeleton rendering.
     /// </summary>
     internal static partial class RadarWindow
     {
@@ -320,6 +320,19 @@ namespace eft_dma_radar.Arena.UI
             GameWorld.PlayerType.AIBoss or GameWorld.PlayerType.AIGuard;
 
         private static uint GetAimviewPlayerColor(GameWorld.Player p)
+        {
+            uint baseColor = ResolveBaseAimviewColor(p);
+
+            // Visibility dimming: aimview colors are ImGui-style 0xAABBGGRR
+            // uints. Replace the alpha byte with BlockedAlpha (~38 %) when
+            // the player is currently behind cover. Same threshold and feel
+            // as the radar / ESP dim pass (see SKPaints.Dimmed).
+            if (!p.IsLocalPlayer && p.IsAlive && !p.IsVisible)
+                return (baseColor & 0x00FFFFFFu) | SKPaints.BlockedAlphaUint32;
+            return baseColor;
+        }
+
+        private static uint ResolveBaseAimviewColor(GameWorld.Player p)
         {
             if (p.Type == GameWorld.PlayerType.Teammate) return _avColorTeammate;
             if (p.TeamID >= 0)

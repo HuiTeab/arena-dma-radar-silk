@@ -53,6 +53,14 @@ namespace eft_dma_radar.Arena.DMA
         public static ulong UnityBase          { get; private set; }
         public static ulong GOM                { get; private set; }
         public static ulong GameAssemblyBase   { get; private set; }
+
+        /// <summary>
+        /// UnityPlayer.dll file version as reported by the PE version resource
+        /// (e.g. <c>"6000.3.6.10436874"</c>). Empty until the first successful
+        /// module enumeration; used by the snapshot cache to fingerprint
+        /// which game build a saved scene snapshot was built against.
+        /// </summary>
+        public static string UnityPlayerVersion { get; private set; } = string.Empty;
         public static bool Ready  => _state is MemoryState.ProcessFound or MemoryState.InGame;
         public static bool InGame => _state is MemoryState.InGame;
 
@@ -329,6 +337,43 @@ namespace eft_dma_radar.Arena.DMA
             ArgumentOutOfRangeException.ThrowIfZero(unityBase, nameof(unityBase));
             UnityBase = unityBase;
 
+            // One-shot Unity engine version probe (from UnityPlayer.dll's PE version
+            // resource). Used to pick the correct PhysX 4.x struct layout for the
+            // future visibility-check work; safe no-op read otherwise. Failures here
+            // are non-fatal — the radar runs fine without knowing the version.
+            try
+            {
+                var modules = vmm.Map_GetModule(_pid, fExtendedInfo: true);
+                if (modules is not null)
+                {
+                    foreach (var m in modules)
+                    {
+                        if (!string.Equals(m.sText, "UnityPlayer.dll", StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        var v = m.VersionInfo;
+                        if (v.fValid && !string.IsNullOrEmpty(v.sFileVersion))
+                        {
+                            UnityPlayerVersion = v.sFileVersion;
+                            Log.WriteLine(
+                                $"[Memory] UnityPlayer.dll FileVersion={v.sFileVersion} " +
+                                $"ProductVersion={v.sProductVersion} " +
+                                $"base=0x{m.vaBase:X} size=0x{m.cbImageSize:X}");
+                        }
+                        else
+                        {
+                            Log.WriteLine(
+                                $"[Memory] UnityPlayer.dll version resource unreadable " +
+                                $"base=0x{m.vaBase:X} size=0x{m.cbImageSize:X}");
+                        }
+                        break;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.WriteLine($"[Memory] UnityPlayer version probe failed: {ex.Message}");
+            }
+
             var gaBase = vmm.ProcessGetModuleBase(_pid, "GameAssembly.dll");
             if (gaBase != 0)
             {
@@ -570,6 +615,26 @@ namespace eft_dma_radar.Arena.DMA
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static ulong[] FindSignatures(string signature, string moduleName, int maxMatches = int.MaxValue)
             => VmmOrThrow().FindSignatures(_pid, signature, moduleName, maxMatches);
+
+        /// <summary>
+        /// Returns the loaded image size (in bytes) of <paramref name="moduleName"/>
+        /// inside the attached process, or 0 if the module isn't currently loaded.
+        /// Used to test whether a candidate pointer falls inside a module's memory
+        /// region (e.g. to flag false positives during PhysX SDK pointer discovery).
+        /// </summary>
+        public static uint GetModuleImageSize(string moduleName)
+        {
+            try
+            {
+                var modules = VmmOrThrow().Map_GetModule(_pid, fExtendedInfo: false);
+                if (modules is null) return 0;
+                foreach (var m in modules)
+                    if (string.Equals(m.sText, moduleName, StringComparison.OrdinalIgnoreCase))
+                        return m.cbImageSize;
+            }
+            catch { }
+            return 0;
+        }
 
         #endregion
 

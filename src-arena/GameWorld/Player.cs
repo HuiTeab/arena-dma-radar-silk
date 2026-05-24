@@ -5,7 +5,7 @@
     using SDK;
 
     /// <summary>
-    /// Player type classification (mirrors Silk's PlayerType).
+    /// Player type classification used by colour / icon selection in the renderers.
     /// </summary>
     internal enum PlayerType
     {
@@ -91,6 +91,24 @@
         /// a "Dying" player is still alive.
         /// </summary>
         public EHealthStatus HealthStatus = EHealthStatus.Healthy;
+
+        /// <summary>
+        /// Vischeck result — true when a clear line-of-sight exists from the local
+        /// player's eye to this player's head bone, false when blocked by world
+        /// geometry. Defaults to <c>true</c> so renderers don't dim players before
+        /// the visibility worker has had a chance to run (cache build, first tick).
+        /// Written by <c>VisibilityWorker</c>, read by ESP / aimview / radar renderers.
+        /// </summary>
+        public bool IsVisible = true;
+
+        /// <summary>
+        /// <see cref="Environment.TickCount64"/> of the last visibility check that
+        /// wrote <see cref="IsVisible"/>. Zero means "never checked". Available
+        /// for staleness checks (e.g. "skip dimming if no vischeck in 500 ms")
+        /// or debug-window displays ("checked 47 ms ago"); current renderers
+        /// trust <see cref="IsVisible"/> directly without inspecting this.
+        /// </summary>
+        public long LastVisCheckTickMs;
 
         /// <summary>True when the position has been successfully computed at least once.</summary>
         public bool HasValidPosition;

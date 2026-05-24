@@ -7,9 +7,9 @@ using ArenaUtils = eft_dma_radar.Arena.Misc.Utils;
 namespace eft_dma_radar.Arena.Unity.IL2CPP
 {
     /// <summary>
-    /// Arena IL2CPP offset dumper â€” adapted from src-silk Il2CppDumper.
-    /// Resolves IL2CPP offsets at runtime and applies them to <see cref="SDK.Offsets"/>
-    /// via reflection. Cache is stored in %AppData%\eft-dma-radar-arena\il2cpp_offsets.json.
+    /// Arena IL2CPP offset dumper. Resolves IL2CPP offsets at runtime and
+    /// applies them to <see cref="SDK.Offsets"/> via reflection. Cache is
+    /// stored in <c>%AppData%\eft-dma-radar-arena\il2cpp_offsets.json</c>.
     /// </summary>
     public static partial class Il2CppDumper
     {

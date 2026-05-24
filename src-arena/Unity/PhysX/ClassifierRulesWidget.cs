@@ -24,6 +24,8 @@ namespace eft_dma_radar.Arena.Unity.PhysX
 
         private static string _newGlobalPat = "";
         private static string _newMapPat    = "";
+        private static string _newGlobalBlk = "";
+        private static string _newMapBlk    = "";
 
         // ── Status feedback (shown for 4 s after any change) ─────────────────
 
@@ -51,6 +53,10 @@ namespace eft_dma_radar.Arena.Unity.PhysX
             DrawGlobalPatternsSection();
             ImGui.Spacing();
             DrawMapPatternsSection();
+            ImGui.Spacing();
+            DrawGlobalBlockerPatternsSection();
+            ImGui.Spacing();
+            DrawMapBlockerPatternsSection();
             ImGui.Spacing();
             DrawReclassifyRow();
         }
@@ -277,6 +283,134 @@ namespace eft_dma_radar.Arena.Unity.PhysX
             }
         }
 
+        // ── Global force-blocker patterns ────────────────────────────────────
+        //
+        // The inverse of see-through patterns. Matches override the
+        // see-through verdict so the actor stays a blocker even when a
+        // broader rule (layer mask, name pattern) would have made it
+        // see-through. Same UX as the see-through editors but rendered with
+        // a distinct red badge so the two never get confused visually.
+
+        private static readonly Vector4 BlockerHeaderColor = new(0.95f, 0.55f, 0.35f, 1f);
+
+        private static void DrawGlobalBlockerPatternsSection()
+        {
+            ImGui.TextColored(BlockerHeaderColor,
+                "Force-blocker patterns (global — override see-through):");
+            var pats = VisibilityClassifier.GlobalBlockerPatterns;
+            var snap = SceneCache.Snapshot;
+
+            for (int i = 0; i < pats.Length; i++)
+            {
+                ImGui.PushID($"gbp_{i}");
+                // For force-blocker rules the useful per-rule badge is "how
+                // many actors does this STILL flip to blocker?" — i.e. how
+                // many would have been see-through without it. That's what
+                // (matches, currentlySeeThru) describes.
+                var (matches, currentSee) = CountMatchesSeeThroughSplit(snap, pats[i]);
+                ImGui.TextUnformatted($"  \"{pats[i]}\"  ");
+                ImGui.SameLine();
+                ImGui.TextDisabled($"({matches} matches; would-be-see-thru without rule: {currentSee})");
+                ImGui.SameLine();
+                if (ImGui.SmallButton("×"))
+                {
+                    var next = new string[pats.Length - 1];
+                    int ni = 0;
+                    for (int k = 0; k < pats.Length; k++)
+                        if (k != i) next[ni++] = pats[k];
+                    VisibilityClassifier.GlobalBlockerPatterns = next;
+                    PersistAndReclassify();
+                    ImGui.PopID();
+                    return;
+                }
+                ImGui.PopID();
+            }
+            if (pats.Length == 0) ImGui.TextDisabled("  (none)");
+
+            float avail = ImGui.GetContentRegionAvail().X;
+            float addW  = ImGui.CalcTextSize("Add##gbp").X + ImGui.GetStyle().FramePadding.X * 2 + 6f;
+            ImGui.SetNextItemWidth(avail - addW - ImGui.GetStyle().ItemSpacing.X);
+            ImGui.InputTextWithHint("##ngbp", "new force-blocker pattern…", ref _newGlobalBlk, 128);
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Add##gbp") && !string.IsNullOrWhiteSpace(_newGlobalBlk))
+            {
+                var next = new string[pats.Length + 1];
+                pats.CopyTo(next, 0);
+                next[pats.Length] = _newGlobalBlk.Trim();
+                VisibilityClassifier.GlobalBlockerPatterns = next;
+                _newGlobalBlk = "";
+                PersistAndReclassify();
+            }
+            if (!string.IsNullOrEmpty(_newGlobalBlk))
+            {
+                var (m, see) = CountMatchesSeeThroughSplit(snap, _newGlobalBlk);
+                ImGui.TextDisabled($"  → {m} actor(s) match, {see} currently see-through (would flip to blocker)");
+            }
+        }
+
+        private static void DrawMapBlockerPatternsSection()
+        {
+            var snap = SceneCache.Snapshot;
+            string mapId = !string.IsNullOrEmpty(snap.MapId)
+                ? snap.MapId
+                : Memory.CurrentGameWorld?.MapID ?? "";
+
+            if (string.IsNullOrEmpty(mapId))
+            {
+                ImGui.TextColored(BlockerHeaderColor,
+                    "Force-blocker patterns (map): (no active map — join a match first)");
+                return;
+            }
+
+            ImGui.TextColored(BlockerHeaderColor,
+                $"Force-blocker patterns — {mapId} (override see-through):");
+            var pats = VisibilityClassifier.GetMapBlockerPatterns(mapId);
+
+            for (int i = 0; i < pats.Length; i++)
+            {
+                ImGui.PushID($"mbp_{i}");
+                var (matches, currentSee) = CountMatchesSeeThroughSplit(snap, pats[i]);
+                ImGui.TextUnformatted($"  \"{pats[i]}\"  ");
+                ImGui.SameLine();
+                ImGui.TextDisabled($"({matches} matches; would-be-see-thru without rule: {currentSee})");
+                ImGui.SameLine();
+                if (ImGui.SmallButton("×"))
+                {
+                    var next = new string[pats.Length - 1];
+                    int ni = 0;
+                    for (int k = 0; k < pats.Length; k++)
+                        if (k != i) next[ni++] = pats[k];
+                    VisibilityClassifier.SetMapBlockerPatterns(mapId, next);
+                    PersistAndReclassify();
+                    ImGui.PopID();
+                    return;
+                }
+                ImGui.PopID();
+            }
+            if (pats.Length == 0) ImGui.TextDisabled("  (none)");
+
+            float avail = ImGui.GetContentRegionAvail().X;
+            float addW  = ImGui.CalcTextSize("Add##mbp").X + ImGui.GetStyle().FramePadding.X * 2 + 6f;
+            ImGui.SetNextItemWidth(avail - addW - ImGui.GetStyle().ItemSpacing.X);
+            ImGui.InputTextWithHint("##nmbp", "new force-blocker pattern…", ref _newMapBlk, 128);
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Add##mbp") && !string.IsNullOrWhiteSpace(_newMapBlk))
+            {
+                var existing = VisibilityClassifier.GetMapBlockerPatterns(mapId);
+                var next = new string[existing.Length + 1];
+                existing.CopyTo(next, 0);
+                next[existing.Length] = _newMapBlk.Trim();
+                VisibilityClassifier.SetMapBlockerPatterns(mapId, next);
+                _newMapBlk = "";
+                PersistAndReclassify();
+            }
+            if (!string.IsNullOrEmpty(_newMapBlk))
+            {
+                var (m, see) = CountMatchesSeeThroughSplit(snap, _newMapBlk);
+                ImGui.TextDisabled($"  → {m} actor(s) match, {see} currently see-through (would flip to blocker)");
+            }
+        }
+
         // ── Live-preview helpers ─────────────────────────────────────────────
         // Substring scan over the snapshot — O(N) per call but N is bounded
         // (~10k actors max) and these only fire when the UI is open, so the
@@ -311,6 +445,29 @@ namespace eft_dma_radar.Arena.Unity.PhysX
                 if (!a.IsSeeThrough) b++;
             }
             return (m, b);
+        }
+
+        /// <summary>
+        /// Mirror of <see cref="CountMatchesSplit"/> tailored to force-blocker
+        /// previews: the second number is "currently see-through" because
+        /// those are the actors that would flip when a force-blocker rule
+        /// commits. Splitting it out as its own method keeps the call sites
+        /// in the blocker-pattern sections readable.
+        /// </summary>
+        private static (int matches, int currentlySeeThrough) CountMatchesSeeThroughSplit(
+            SceneSnapshot snap, string pattern)
+        {
+            if (string.IsNullOrEmpty(pattern)) return (0, 0);
+            int m = 0, s = 0;
+            for (int i = 0; i < snap.Actors.Length; i++)
+            {
+                var a = snap.Actors[i];
+                if (a.Name is null) continue;
+                if (!a.Name.Contains(pattern, StringComparison.OrdinalIgnoreCase)) continue;
+                m++;
+                if (a.IsSeeThrough) s++;
+            }
+            return (m, s);
         }
 
         // ── Reclassify button + feedback ─────────────────────────────────────

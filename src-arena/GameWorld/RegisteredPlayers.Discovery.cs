@@ -58,19 +58,29 @@ namespace eft_dma_radar.Arena.GameWorld
                 }
                 else
                 {
-                    // Observed player (ObservedPlayerView hierarchy)
-                    int sideRaw = Memory.ReadValue<int>(playerBase + Offsets.ObservedPlayerView.Side, false);
-                    isAI = Memory.ReadValue<bool>(playerBase + Offsets.ObservedPlayerView.IsAI, false);
+                    // Observed player (ObservedPlayerView hierarchy).
+                    // Use Try-variants here — observed players are often
+                    // half-initialised when first seen (server's mid-spawn),
+                    // and the throwing variants fired a VmmException per
+                    // missing field on every registration tick until the
+                    // fields populated. The placeholder-entry guard below
+                    // already handles "no data yet" as a skip; we just need
+                    // the reads to fail silently rather than via exception.
+                    int  sideRaw = 0;
+                    Memory.TryReadValue<int>(playerBase + Offsets.ObservedPlayerView.Side, out sideRaw, false);
+                    Memory.TryReadValue<bool>(playerBase + Offsets.ObservedPlayerView.IsAI, out isAI, false);
 
                     // Nickname
+                    name = string.Empty;
                     if (Memory.TryReadPtr(playerBase + Offsets.ObservedPlayerView.NickName, out var nickPtr, false)
                         && nickPtr.IsValidVirtualAddress())
                     {
-                        name = Memory.ReadUnityString(nickPtr, 64, false);
-                    }
-                    else
-                    {
-                        name = string.Empty;
+                        // ReadUnityString throws; the Try variant short-circuits
+                        // when the string header is unreadable / mid-populate.
+                        if (!Memory.TryReadUnityString(nickPtr, out var nm, 64, false) || nm is null)
+                            name = string.Empty;
+                        else
+                            name = nm;
                     }
                     nickSucceeded = !string.IsNullOrWhiteSpace(name);
                     typeSucceeded = sideRaw != 0;
@@ -355,11 +365,20 @@ namespace eft_dma_radar.Arena.GameWorld
                     player.ArmBandSlotAddr = 0;
                 }
 
-                var inventory = Memory.ReadPtr(inventoryController + Offsets.InventoryController.Inventory);
-                var equipment = Memory.ReadPtr(inventory + Offsets.Inventory.Equipment);
-                var slots     = Memory.ReadPtr(equipment + Offsets.CompoundItem.Slots);
+                // The inventory chain isn't always populated yet at registration
+                // time (mid-init or mid-respawn). The throwing variants here
+                // produced a BadPtrException per call on every freshly-spawned
+                // player — the outer catch absorbed them but the stack-walks
+                // still showed up in the debugger output as first-chance
+                // exceptions. Try-variants short-circuit cleanly.
+                if (!Memory.TryReadPtr(inventoryController + Offsets.InventoryController.Inventory, out var inventory)
+                    || !Memory.TryReadPtr(inventory + Offsets.Inventory.Equipment, out var equipment)
+                    || !Memory.TryReadPtr(equipment + Offsets.CompoundItem.Slots, out var slots))
+                    return -1;
 
-                using var slotsArray = MemArray<ulong>.Get(slots);
+                if (!MemArray<ulong>.TryGet(slots, out var slotsArray) || slotsArray is null)
+                    return -1;
+                using (slotsArray)
                 foreach (var slotPtr in slotsArray)
                 {
                     if (!slotPtr.IsValidVirtualAddress()) continue;
@@ -403,10 +422,13 @@ namespace eft_dma_radar.Arena.GameWorld
                 if (!Memory.TryReadPtr(equipment + Offsets.CompoundItem.Slots, out var slots, false)
                     || !slots.IsValidVirtualAddress()) continue;
 
-                MemArray<ulong>? slotsArray = null;
-                try { slotsArray = MemArray<ulong>.Get(slots, false); }
-                catch { continue; }
-                if (slotsArray is null) continue;
+                // Hot scan loop — use the non-throwing variant. The previous
+                // try/catch/continue around the throwing Get() generated a
+                // first-chance exception per failed candidate offset, which
+                // ExceptionTracer pegged as the #1 source of VmmException +
+                // ArgumentOutOfRangeException in the match log.
+                if (!MemArray<ulong>.TryGet(slots, out var slotsArray, false) || slotsArray is null)
+                    continue;
 
                 using (slotsArray)
                 {

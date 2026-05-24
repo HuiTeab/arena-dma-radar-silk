@@ -67,6 +67,13 @@ namespace eft_dma_radar.Arena.Unity.PhysX
         [
             "Glass",
             "Cube (",
+            // Player capsule colliders. Layer varies by map (16 on Arena_Prison,
+            // 8 on Arena_Bay5) so the layer-mask rule alone isn't enough — a
+            // live Arena_Bay5 match log showed "PlayerSuperior(Clone)" capsules
+            // on layer 8 reported as blockers, masking the real geometry behind
+            // teammates / enemies. Matching the name catches every map regardless
+            // of which layer BSG assigned the player on it.
+            "PlayerSuperior",
         ];
 
         // Per-map additional patterns. Keyed by SceneSnapshot.MapId
@@ -83,6 +90,59 @@ namespace eft_dma_radar.Arena.Unity.PhysX
         // load) are infrequent and atomic at the dictionary-replace level.
         private static readonly Dictionary<string, string[]> _mapPatterns
             = new(System.StringComparer.OrdinalIgnoreCase);
+
+        // ── Force-blocker rules ──────────────────────────────────────────────
+        //
+        // The inverse of see-through patterns. When the see-through rules
+        // (layer mask + global / per-map name patterns) classify an actor as
+        // see-through, but a force-blocker pattern matches its name, the
+        // actor is flipped back to BLOCKER. Use cases:
+        //
+        //   - SeeThroughLayerMask covers a layer that mostly contains
+        //     gameplay-trigger geometry but has a handful of real walls on
+        //     it (e.g. layer 18 might have a few "Container_Wall_*" that
+        //     should still block) — adding "Container_Wall" as a force-blocker
+        //     keeps the layer rule simple without listing every safe actor.
+        //
+        //   - A global see-through pattern is broader than ideal (e.g.
+        //     "Cube" catches both gameplay cubes AND a few level-design
+        //     concrete-cube props) — adding a more specific force-blocker
+        //     pattern ("ConcreteCube") carves out the real cover.
+        //
+        // Force-blocker rules take precedence over see-through rules.
+
+        /// <summary>Global force-blocker name substrings — apply on every map.</summary>
+        public static string[] GlobalBlockerPatterns { get; set; } = [];
+
+        private static readonly Dictionary<string, string[]> _mapBlockerPatterns
+            = new(System.StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Replaces the per-map force-blocker pattern list for
+        /// <paramref name="mapId"/>. Passing <c>null</c> or an empty array
+        /// clears the entry.
+        /// </summary>
+        public static void SetMapBlockerPatterns(string mapId, params string[] patterns)
+        {
+            if (string.IsNullOrEmpty(mapId)) return;
+            if (patterns is null || patterns.Length == 0)
+                _mapBlockerPatterns.Remove(mapId);
+            else
+                _mapBlockerPatterns[mapId] = (string[])patterns.Clone();
+        }
+
+        /// <summary>
+        /// Returns the per-map force-blocker pattern list for
+        /// <paramref name="mapId"/>, or an empty array when no entry exists.
+        /// Snapshot copy — mutating it does not affect storage.
+        /// </summary>
+        public static string[] GetMapBlockerPatterns(string mapId)
+        {
+            if (string.IsNullOrEmpty(mapId)) return [];
+            return _mapBlockerPatterns.TryGetValue(mapId, out var v) ? (string[])v.Clone() : [];
+        }
+
+        public static IReadOnlyDictionary<string, string[]> AllMapBlockerPatterns => _mapBlockerPatterns;
 
         /// <summary>
         /// Replaces the per-map pattern list for <paramref name="mapId"/>.
@@ -126,6 +186,12 @@ namespace eft_dma_radar.Arena.Unity.PhysX
             if (cfg.VisCheckGlobalNamePatterns is { Length: > 0 })
                 GlobalNamePatterns = (string[])cfg.VisCheckGlobalNamePatterns.Clone();
 
+            // Force-blocker patterns: load even when empty so deleting all
+            // patterns via the UI sticks across restart.
+            GlobalBlockerPatterns = cfg.VisCheckGlobalBlockerPatterns is null
+                ? []
+                : (string[])cfg.VisCheckGlobalBlockerPatterns.Clone();
+
             Raycaster.SeeThroughLayerMask = cfg.VisCheckSeeThroughLayerMask;
 
             _mapPatterns.Clear();
@@ -137,6 +203,16 @@ namespace eft_dma_radar.Arena.Unity.PhysX
                         _mapPatterns[kv.Key] = (string[])kv.Value.Clone();
                 }
             }
+
+            _mapBlockerPatterns.Clear();
+            if (cfg.VisCheckMapBlockerPatterns is not null)
+            {
+                foreach (var kv in cfg.VisCheckMapBlockerPatterns)
+                {
+                    if (!string.IsNullOrEmpty(kv.Key) && kv.Value?.Length > 0)
+                        _mapBlockerPatterns[kv.Key] = (string[])kv.Value.Clone();
+                }
+            }
         }
 
         /// <summary>
@@ -145,12 +221,19 @@ namespace eft_dma_radar.Arena.Unity.PhysX
         /// </summary>
         public static void SaveToConfig(ArenaConfig cfg)
         {
-            cfg.VisCheckSeeThroughLayerMask = Raycaster.SeeThroughLayerMask;
-            cfg.VisCheckGlobalNamePatterns  = (string[])GlobalNamePatterns.Clone();
+            cfg.VisCheckSeeThroughLayerMask    = Raycaster.SeeThroughLayerMask;
+            cfg.VisCheckGlobalNamePatterns     = (string[])GlobalNamePatterns.Clone();
+            cfg.VisCheckGlobalBlockerPatterns  = (string[])GlobalBlockerPatterns.Clone();
+
             var dict = new Dictionary<string, string[]>();
             foreach (var kv in _mapPatterns)
                 dict[kv.Key] = (string[])kv.Value.Clone();
             cfg.VisCheckMapNamePatterns = dict;
+
+            var blkDict = new Dictionary<string, string[]>();
+            foreach (var kv in _mapBlockerPatterns)
+                blkDict[kv.Key] = (string[])kv.Value.Clone();
+            cfg.VisCheckMapBlockerPatterns = blkDict;
         }
 
         /// <summary>
@@ -161,25 +244,37 @@ namespace eft_dma_radar.Arena.Unity.PhysX
         /// </summary>
         public static bool Classify(string mapId, uint shapeLayerMask, string? name)
         {
-            // Layer rule (Phase 1 V0) — cheapest, fires before any string work.
+            // Step 1 — compute baseline see-through verdict from layer + name rules.
+            bool isSeeThrough = false;
+
             uint layerMask = Raycaster.SeeThroughLayerMask;
             if (layerMask != 0 && (shapeLayerMask & layerMask) != 0)
-                return true;
+                isSeeThrough = true;
+            else if (!string.IsNullOrEmpty(name))
+            {
+                if (MatchesAny(name, GlobalNamePatterns))
+                    isSeeThrough = true;
+                else if (!string.IsNullOrEmpty(mapId)
+                         && _mapPatterns.TryGetValue(mapId, out var perMap)
+                         && MatchesAny(name, perMap))
+                    isSeeThrough = true;
+            }
 
-            if (string.IsNullOrEmpty(name))
-                return false;
+            // Step 2 — force-blocker override. Only checked when we'd
+            // otherwise mark the actor see-through; rules that don't match
+            // a see-through actor don't need to fire because the actor is
+            // already a blocker. Order: global first, then map-scoped.
+            if (isSeeThrough && !string.IsNullOrEmpty(name))
+            {
+                if (MatchesAny(name, GlobalBlockerPatterns))
+                    return false;
+                if (!string.IsNullOrEmpty(mapId)
+                    && _mapBlockerPatterns.TryGetValue(mapId, out var perMapBlk)
+                    && MatchesAny(name, perMapBlk))
+                    return false;
+            }
 
-            // Phase 1 V1 — global name patterns (apply to every map).
-            if (MatchesAny(name, GlobalNamePatterns))
-                return true;
-
-            // Phase 1 V2 — map-scoped name patterns (this scene only).
-            if (!string.IsNullOrEmpty(mapId)
-                && _mapPatterns.TryGetValue(mapId, out var perMap)
-                && MatchesAny(name, perMap))
-                return true;
-
-            return false;
+            return isSeeThrough;
         }
 
         /// <summary>
@@ -192,23 +287,45 @@ namespace eft_dma_radar.Arena.Unity.PhysX
         /// </summary>
         public static string Explain(string mapId, uint shapeLayerMask, string? name)
         {
+            // First: identify which see-through rule (if any) would have fired.
+            // Then check whether a force-blocker pattern overrode it. The
+            // assembled string surfaces both halves of the decision so the
+            // user can tell "this is a blocker BECAUSE I told it to be"
+            // from "this is a blocker because no see-through rule matched".
+            string? seeThroughReason = null;
+
             uint layerMask = Raycaster.SeeThroughLayerMask;
             if (layerMask != 0 && (shapeLayerMask & layerMask) != 0)
-                return $"layer mask 0x{layerMask:X}";
-
-            if (!string.IsNullOrEmpty(name))
+                seeThroughReason = $"layer mask 0x{layerMask:X}";
+            else if (!string.IsNullOrEmpty(name))
             {
                 string? hit = FirstMatch(name, GlobalNamePatterns);
-                if (hit is not null) return $"global pattern \"{hit}\"";
-
-                if (!string.IsNullOrEmpty(mapId)
-                    && _mapPatterns.TryGetValue(mapId, out var perMap))
+                if (hit is not null) seeThroughReason = $"global pattern \"{hit}\"";
+                else if (!string.IsNullOrEmpty(mapId)
+                         && _mapPatterns.TryGetValue(mapId, out var perMap))
                 {
                     hit = FirstMatch(name, perMap);
-                    if (hit is not null) return $"map(\"{mapId}\") pattern \"{hit}\"";
+                    if (hit is not null) seeThroughReason = $"map(\"{mapId}\") pattern \"{hit}\"";
                 }
             }
-            return "no rule matched";
+
+            // Check the force-blocker rules — only meaningful when there was
+            // a see-through rule to override.
+            if (seeThroughReason is not null && !string.IsNullOrEmpty(name))
+            {
+                string? blkHit = FirstMatch(name, GlobalBlockerPatterns);
+                if (blkHit is not null)
+                    return $"force-blocker pattern \"{blkHit}\" overrode {seeThroughReason}";
+                if (!string.IsNullOrEmpty(mapId)
+                    && _mapBlockerPatterns.TryGetValue(mapId, out var perMapBlk))
+                {
+                    blkHit = FirstMatch(name, perMapBlk);
+                    if (blkHit is not null)
+                        return $"force-blocker map(\"{mapId}\") pattern \"{blkHit}\" overrode {seeThroughReason}";
+                }
+            }
+
+            return seeThroughReason ?? "no rule matched";
         }
 
         /// <summary>

@@ -41,6 +41,12 @@ namespace eft_dma_radar.Arena.GameWorld
         private int _cameraRetryAttempts;
         private bool _cameraRetryExhaustedLogged;
 
+        // Tracks the alive→dead→alive transitions so the camera worker can
+        // log the freeze/unfreeze once per state change instead of every tick,
+        // and so respawn can request a fresh FPS-camera resolve (the camera
+        // GameObject is rebuilt on respawn — the cached pointer is stale).
+        private bool _wasLocalDead;
+
         private static readonly TimeSpan CameraRetryBudget = TimeSpan.FromMinutes(2);
         private static readonly TimeSpan CameraRetryIntervalFast = TimeSpan.FromSeconds(1);
         private static readonly TimeSpan CameraRetryIntervalSlow = TimeSpan.FromSeconds(3);
@@ -306,7 +312,8 @@ namespace eft_dma_radar.Arena.GameWorld
             ThrowIfMatchEnded();
 
             // Wait until local player is discovered before bothering with camera.
-            if (_registeredPlayers.LocalPlayer is null)
+            var local = _registeredPlayers.LocalPlayer;
+            if (local is null)
             {
                 Log.WriteRateLimited(AppLogLevel.Info, "cam_wait_lp", TimeSpan.FromSeconds(5),
                     "[CameraWorker] Waiting for LocalPlayer before camera init...");
@@ -319,6 +326,48 @@ namespace eft_dma_radar.Arena.GameWorld
                 {
                     TryDeferredCameraInit();
                     return;
+                }
+
+                // Spectator-mode gate. When the local player is dead, Arena
+                // rebuilds the FPS camera GameObject so the spectator view
+                // can attach to it. The cached pointer is then either stale
+                // (read fails / wedges) or starts returning the SPECTATOR's
+                // view matrix — which corrupts WorldPosition and projects
+                // every consumer (ESP, Aimview, Skeleton W2S) from the wrong
+                // eye until respawn. Freezing the camera at the last alive
+                // frame keeps existing projections coherent and avoids the
+                // "ESP boxes drifting around to whatever player I'm
+                // spectating" artefact.
+                if (!local.IsAlive)
+                {
+                    if (!_wasLocalDead)
+                    {
+                        _wasLocalDead = true;
+                        // Queue a refresh for whenever we come back alive —
+                        // the FPS camera ptr will almost certainly be new.
+                        CameraManager.RequestFpsCameraRefresh();
+                        Log.WriteLine(
+                            "[CameraWorker] LocalPlayer is dead — freezing camera state " +
+                            "until respawn (skeleton scatter still runs so respawn " +
+                            "detection is immediate).");
+                    }
+                    // Skeleton scatter keeps running — it's camera-independent
+                    // (reads world bone positions directly) and lets the
+                    // ESP/radar keep tracking other players while we're
+                    // spectating, plus it picks up our own respawn instantly.
+                    _registeredPlayers.BatchInitSkeletons();
+                    _registeredPlayers.BatchUpdateSkeletons();
+                    return;
+                }
+                else if (_wasLocalDead)
+                {
+                    _wasLocalDead = false;
+                    // Already requested on death; do it again here defensively
+                    // in case the dead-state transition was missed (e.g. the
+                    // worker ticked through the alive=false window in a single
+                    // sleep cycle and we only see alive=true on the next tick).
+                    CameraManager.RequestFpsCameraRefresh();
+                    Log.WriteLine("[CameraWorker] LocalPlayer respawned — resuming camera updates.");
                 }
 
                 _cameraManager.UpdateCamera();

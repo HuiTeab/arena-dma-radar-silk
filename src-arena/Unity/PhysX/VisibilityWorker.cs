@@ -159,7 +159,13 @@ namespace eft_dma_radar.Arena.Unity.PhysX
 
             var gw = Memory.CurrentGameWorld;
             var local = gw?.LocalPlayer;
-            if (gw is null || local is null || !local.HasValidPosition)
+            // Skip when local player isn't alive — rays from a dead body
+            // (which still has a position) would either be useless (the body
+            // is in cover, so everything looks blocked) or pin "IsVisible"
+            // to stale values from the last alive tick. Cleaner to clear the
+            // tick stats and let the debug overlay show "checks=0" so the
+            // user can see the worker is intentionally idle, not stuck.
+            if (gw is null || local is null || !local.HasValidPosition || !local.IsAlive)
             {
                 LastTickStats = new TickStats { Checks = 0, Blocked = 0, AvgUs = 0f, MaxUs = 0f, EyePos = Vector3.Zero };
                 return;
@@ -179,8 +185,11 @@ namespace eft_dma_radar.Arena.Unity.PhysX
             float maxUs = 0f;
             var nowMs = Environment.TickCount64;
             // Throttle diagnostic logging — one line per ~1 second so we can see
-            // eye / target positions and which actor blocked without flooding the log.
-            bool wantDiagLog = nowMs - _lastDiagLogMs >= 1000;
+            // eye / target positions and which actor blocked without flooding
+            // the log. Gated behind Log.EnableDebugLogging so it stays silent
+            // in normal play — the Top Blockers panel + tick-JSONL log are
+            // the structured replacements for this ad-hoc per-second line.
+            bool wantDiagLog = Log.EnableDebugLogging && nowMs - _lastDiagLogMs >= 1000;
             bool didDiagLog = false;
 
             // Reuse one buffer for the per-player results — cleared at start of tick.

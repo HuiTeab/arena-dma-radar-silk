@@ -29,6 +29,11 @@ namespace eft_dma_radar.Arena
                     || (args?.Contains("-il2cppdump", StringComparer.OrdinalIgnoreCase) ?? false);
                 Log.WriteLine("[ArenaProgram] Config loaded OK.");
 
+                // Config field is the primary toggle; ExceptionTracer.Install
+                // also honours the ARENA_TRACE_DMA_EXCEPTIONS env var as an
+                // override for "I need this on for one launch without editing
+                // config.json" scenarios.
+                if (Config.TraceDmaExceptions) ExceptionTracer.Enabled = false;
                 ExceptionTracer.Install();
 
                 SetHighPerformanceMode();

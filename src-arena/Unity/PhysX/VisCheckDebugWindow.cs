@@ -36,6 +36,25 @@ namespace eft_dma_radar.Arena.Unity.PhysX
         private static string _blockerAddStatus        = "";
         private static long   _blockerAddStatusMs;
 
+        // ── Top see-through state ────────────────────────────────────────────
+        // Same shape as the blocker popup state but for the mirror workflow:
+        // user is browsing see-through actors and wants to promote one to a
+        // force-blocker rule. Separate state vars so the two popups can't
+        // collide if the user opens one then the other.
+        private static string _seeThruAddPopupName  = "";
+        private static string _seeThruCustomPattern = "";
+        private static string _seeThruAddStatus     = "";
+        private static long   _seeThruAddStatusMs;
+
+        // Cached aggregation of see-through actors from the current snapshot.
+        // Unlike Top Blockers (live hit window), see-through actors aren't
+        // tested per-tick so there's no natural live signal — we just count
+        // occurrences in the snapshot. ReferenceEquals(snap) gate avoids
+        // re-aggregating 7k+ names every UI frame.
+        private static SceneSnapshot? _seeThruSnapshotRef;
+        private static List<(string Name, int Count, int FirstIdx)> _seeThruByName = new();
+        private static string _seeThruFilter = "";
+
         // ── Frame entry point ────────────────────────────────────────────────
 
         public static void Draw()
@@ -92,6 +111,8 @@ namespace eft_dma_radar.Arena.Unity.PhysX
             DrawWorkerStatsBlock();
             ImGui.Separator();
             DrawTopBlockersBlock();
+            ImGui.Separator();
+            DrawTopSeeThroughBlock();
             ImGui.Separator();
             DrawPerPlayerBlock();
         }
@@ -491,6 +512,264 @@ namespace eft_dma_radar.Arena.Unity.PhysX
             _blockerAddStatusMs = Environment.TickCount64;
         }
 
+        /// <summary>
+        /// Mirror of <see cref="CommitPattern"/> for the force-blocker side —
+        /// appends to <see cref="VisibilityClassifier.GlobalBlockerPatterns"/>
+        /// instead of <c>GlobalNamePatterns</c>. Separate status field so the
+        /// two parallel popups can both show their own feedback without
+        /// stomping each other's success line.
+        /// </summary>
+        private static void CommitBlockerPattern(string pattern)
+        {
+            if (string.IsNullOrWhiteSpace(pattern)) return;
+            var current = VisibilityClassifier.GlobalBlockerPatterns;
+            foreach (var p in current)
+            {
+                if (string.Equals(p, pattern, StringComparison.OrdinalIgnoreCase))
+                {
+                    _seeThruAddStatus   = $"Pattern \"{pattern}\" already exists — no change.";
+                    _seeThruAddStatusMs = Environment.TickCount64;
+                    return;
+                }
+            }
+
+            var next = new string[current.Length + 1];
+            current.CopyTo(next, 0);
+            next[current.Length] = pattern;
+            VisibilityClassifier.GlobalBlockerPatterns = next;
+
+            VisibilityClassifier.Reclassify(SceneCache.Snapshot);
+            VisibilityClassifier.SaveToConfig(ArenaProgram.Config);
+            ArenaProgram.Config.Save();
+
+            _seeThruAddStatus   = $"Added \"{pattern}\" — force-blocker rules now {next.Length}.";
+            _seeThruAddStatusMs = Environment.TickCount64;
+        }
+
+        /// <summary>
+        /// Browseable view of currently-see-through actors so the user can
+        /// promote a misclassified actor to a force-blocker rule. Mirror of
+        /// <see cref="DrawTopBlockersBlock"/>, but the aggregation is over the
+        /// snapshot (see-through actors don't get hit per-tick, so there's no
+        /// live frequency signal to sort by — instead we sort by occurrence
+        /// count in the snapshot, which still surfaces "this name appears
+        /// 384 times — almost certainly a real prop group" first).
+        /// </summary>
+        private static void DrawTopSeeThroughBlock()
+        {
+            var snap = SceneCache.Snapshot;
+            RebuildSeeThroughCacheIfStale(snap);
+
+            ImGui.Text(
+                $"Top See-Through Actors (snapshot):  " +
+                $"names={_seeThruByName.Count}");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "Aggregated counts of currently-see-through actors from\n" +
+                    "the snapshot. Click +Blocker on a row to promote it to a\n" +
+                    "force-blocker rule (overrides the see-through verdict).\n" +
+                    "Useful when a layer-mask rule is too broad and a few\n" +
+                    "specific actors on that layer should still block.");
+
+            if (_seeThruByName.Count == 0)
+            {
+                ImGui.TextDisabled("  (no see-through actors in current snapshot)");
+                MaybeDrawSeeThruPopup();
+                return;
+            }
+
+            long now = Environment.TickCount64;
+            if (!string.IsNullOrEmpty(_seeThruAddStatus) && now - _seeThruAddStatusMs < 4000)
+                ImGui.TextColored(new Vector4(0.95f, 0.55f, 0.35f, 1f), _seeThruAddStatus);
+
+            float fw = ImGui.GetContentRegionAvail().X;
+            ImGui.SetNextItemWidth(fw);
+            ImGui.InputTextWithHint("##stf", "filter names…", ref _seeThruFilter, 64);
+
+            const float TableHeight = 140f;
+            if (ImGui.BeginTable("##topst", 4,
+                    ImGuiTableFlags.RowBg | ImGuiTableFlags.Borders |
+                    ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.ScrollY,
+                    new Vector2(0, TableHeight)))
+            {
+                ImGui.TableSetupColumn("Name",  ImGuiTableColumnFlags.WidthStretch, 1.0f);
+                ImGui.TableSetupColumn("Layer", ImGuiTableColumnFlags.WidthFixed,   42f);
+                ImGui.TableSetupColumn("Count", ImGuiTableColumnFlags.WidthFixed,   56f);
+                ImGui.TableSetupColumn("",      ImGuiTableColumnFlags.WidthFixed,   62f);
+                ImGui.TableSetupScrollFreeze(0, 1);
+                ImGui.TableHeadersRow();
+
+                for (int i = 0; i < _seeThruByName.Count; i++)
+                {
+                    var (name, count, firstIdx) = _seeThruByName[i];
+
+                    if (_seeThruFilter.Length > 0
+                        && name.IndexOf(_seeThruFilter, StringComparison.OrdinalIgnoreCase) < 0)
+                        continue;
+
+                    if ((uint)firstIdx >= (uint)snap.Actors.Length) continue;
+                    var firstActor = snap.Actors[firstIdx];
+
+                    ImGui.TableNextRow();
+                    int col = 0;
+
+                    ImGui.TableSetColumnIndex(col++);
+                    ImGui.TextUnformatted(string.IsNullOrEmpty(name) ? "(unnamed)" : name);
+                    if (ImGui.IsItemHovered())
+                    {
+                        string reason = VisibilityClassifier.Explain(
+                            snap.MapId, firstActor.ShapeLayerMask, firstActor.Name);
+                        ImGui.SetTooltip(
+                            $"Name: {(string.IsNullOrEmpty(name) ? "(unnamed)" : name)}\n" +
+                            $"Count in snapshot: {count}\n" +
+                            $"See-through reason: {reason}\n" +
+                            "Click +Blocker to force the see-through rule to skip this name.");
+                    }
+
+                    ImGui.TableSetColumnIndex(col++);
+                    ImGui.Text(firstActor.UnityLayer.ToString());
+
+                    ImGui.TableSetColumnIndex(col++);
+                    ImGui.Text(count.ToString());
+
+                    ImGui.TableSetColumnIndex(col);
+                    ImGui.PushID(i);
+                    if (ImGui.SmallButton("+Blocker"))
+                    {
+                        _seeThruAddPopupName  = name ?? "";
+                        _seeThruCustomPattern = name ?? "";
+                        ImGui.OpenPopup("##add_blocker_popup");
+                    }
+                    if (ImGui.IsItemHovered())
+                        ImGui.SetTooltip(
+                            "Promote this actor to a force-blocker rule.\n" +
+                            "Opens a picker with full-name / stripped-suffix /\n" +
+                            "prefix options + live preview of how many\n" +
+                            "see-through actors would flip back to blocker.");
+                    ImGui.PopID();
+                }
+                ImGui.EndTable();
+            }
+
+            MaybeDrawSeeThruPopup();
+        }
+
+        private static void MaybeDrawSeeThruPopup()
+        {
+            if (!ImGui.BeginPopup("##add_blocker_popup"))
+                return;
+            try
+            {
+                ImGui.TextDisabled("Add force-blocker rule for:");
+                ImGui.TextUnformatted(_seeThruAddPopupName);
+                ImGui.Separator();
+
+                var (stripped, prefix) = SuggestPatterns(_seeThruAddPopupName);
+                var snap = SceneCache.Snapshot;
+
+                ImGui.TextDisabled("Pick a pattern (broader → flips more actors):");
+
+                DrawBlockerCandidate("Full name",   _seeThruAddPopupName, snap);
+                if (!string.IsNullOrEmpty(stripped) && stripped != _seeThruAddPopupName)
+                    DrawBlockerCandidate("Strip _##/numeric tail", stripped, snap);
+                if (!string.IsNullOrEmpty(prefix) && prefix != stripped && prefix != _seeThruAddPopupName)
+                    DrawBlockerCandidate("Prefix bucket", prefix, snap);
+
+                ImGui.Separator();
+                ImGui.TextDisabled("Or custom substring:");
+                ImGui.SetNextItemWidth(300f);
+                ImGui.InputText("##custom_blk_pat", ref _seeThruCustomPattern, 128);
+                int custMatch = string.IsNullOrEmpty(_seeThruCustomPattern)
+                    ? 0
+                    : CountMatches(snap, _seeThruCustomPattern);
+                int custSee = string.IsNullOrEmpty(_seeThruCustomPattern)
+                    ? 0
+                    : CountMatchesSeeThrough(snap, _seeThruCustomPattern);
+                ImGui.Text($"  → {custMatch} actor(s) match, {custSee} currently see-through");
+                ImGui.SameLine();
+                if (ImGui.Button("Add custom") && !string.IsNullOrWhiteSpace(_seeThruCustomPattern))
+                {
+                    CommitBlockerPattern(_seeThruCustomPattern.Trim());
+                    ImGui.CloseCurrentPopup();
+                }
+
+                ImGui.Separator();
+                if (ImGui.Button("Cancel")) ImGui.CloseCurrentPopup();
+            }
+            finally
+            {
+                ImGui.EndPopup();
+            }
+        }
+
+        /// <summary>
+        /// Mirror of <see cref="DrawPatternCandidate"/> for blocker rules. Renders
+        /// "N actors match, M currently see-through (would flip back to blocker)"
+        /// so the user picks the right specificity. Apply hits
+        /// <see cref="CommitBlockerPattern"/> instead of the see-through commit.
+        /// </summary>
+        private static void DrawBlockerCandidate(string label, string pattern, SceneSnapshot snap)
+        {
+            ImGui.PushID(label);
+            int matches = CountMatches(snap, pattern);
+            int wouldFlip = CountMatchesSeeThrough(snap, pattern);
+
+            ImGui.TextUnformatted($"  {label}: \"{pattern}\"");
+            ImGui.TextDisabled($"     → {matches} match, {wouldFlip} currently see-through (would flip back to blocker)");
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Apply"))
+            {
+                CommitBlockerPattern(pattern);
+                ImGui.CloseCurrentPopup();
+            }
+            ImGui.PopID();
+        }
+
+        private static int CountMatchesSeeThrough(SceneSnapshot snap, string pattern)
+        {
+            if (string.IsNullOrEmpty(pattern)) return 0;
+            int n = 0;
+            for (int i = 0; i < snap.Actors.Length; i++)
+            {
+                var a = snap.Actors[i];
+                if (a.Name is null) continue;
+                if (!a.Name.Contains(pattern, StringComparison.OrdinalIgnoreCase)) continue;
+                if (a.IsSeeThrough) n++;
+            }
+            return n;
+        }
+
+        /// <summary>
+        /// Rebuilds <see cref="_seeThruByName"/> when the snapshot ref changes.
+        /// Groups by exact actor name so the user sees natural clusters
+        /// ("collider_mesh" × 384, "Glass" × 129, etc.) — same shape as the
+        /// existing Cache View bucket panel but simpler (no bucket extraction
+        /// since the natural unit here is the full name).
+        /// </summary>
+        private static void RebuildSeeThroughCacheIfStale(SceneSnapshot snap)
+        {
+            if (ReferenceEquals(snap, _seeThruSnapshotRef)) return;
+            _seeThruSnapshotRef = snap;
+
+            var counts = new Dictionary<string, (int Count, int FirstIdx)>(StringComparer.Ordinal);
+            for (int i = 0; i < snap.Actors.Length; i++)
+            {
+                var a = snap.Actors[i];
+                if (!a.IsSeeThrough) continue;
+                var nm = a.Name ?? "";
+                if (counts.TryGetValue(nm, out var c))
+                    counts[nm] = (c.Count + 1, c.FirstIdx);
+                else
+                    counts[nm] = (1, i);
+            }
+
+            _seeThruByName = counts
+                .Select(kv => (kv.Key, kv.Value.Count, kv.Value.FirstIdx))
+                .OrderByDescending(t => t.Count)
+                .Take(200)
+                .ToList();
+        }
+
         private static void DrawPerPlayerBlock()
         {
             // ── Filter + column toggles ───────────────────────────────────────
@@ -674,6 +953,29 @@ namespace eft_dma_radar.Arena.Unity.PhysX
                     "After every classifier rule change + reclassification, log\n" +
                     "the new rules + how many actors flipped see-through ↔ blocker.\n" +
                     "Use to verify a new name pattern actually moved what you expected.");
+
+            // VmmException tracer — answers "which read is throwing the
+            // first-chance exception I see in the debugger?". Logs each
+            // unique call site once with a full stack trace (capped at 200
+            // sites to self-limit). Requires restart to take effect — the
+            // FirstChanceException hook gets installed once at startup.
+            bool traceDma = ArenaProgram.Config.TraceDmaExceptions;
+            if (ImGui.Checkbox("Trace DMA exceptions##diag", ref traceDma))
+            {
+                ArenaProgram.Config.TraceDmaExceptions = traceDma;
+                ArenaProgram.Config.Save();
+                // Live-flip if the hook is already installed; otherwise the
+                // user has to restart for the AppDomain hook to register.
+                ExceptionTracer.Enabled = traceDma;
+            }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "Hook AppDomain.FirstChanceException and log each unique\n" +
+                    "VmmException / BadPtrException call site once, with a full\n" +
+                    "stack trace. Answers \"which read is throwing?\" without\n" +
+                    "spamming the log (capped at 200 distinct sites).\n" +
+                    "Takes effect on next launch if turned on before startup;\n" +
+                    "live-toggle works once the hook is installed.");
 
             // Action row — dump on demand + folder open. Disabled when there's
             // no live snapshot to dump.

@@ -317,6 +317,22 @@ namespace eft_dma_radar.Arena.UI
 
                 var gw = Memory.CurrentGameWorld;
                 var local = gw?.LocalPlayer;
+
+                // Spectator early-out. When the local player is dead and
+                // waiting to respawn (deathmatch = fast, teamfight = longer),
+                // ESP must not draw anything — the camera is frozen at the
+                // moment of death so any projection would smear away from
+                // the real player positions on the spectator's screen.
+                // Black canvas = fully transparent on the chromakeyed
+                // overlay, so the user sees the unobstructed spectator view.
+                // Returns BEFORE DrawHint too so even the controls hint
+                // doesn't leak onto the screen.
+                if (local is not null && !local.IsAlive)
+                {
+                    _grContext.Flush();
+                    return;
+                }
+
                 bool camReady = CameraManager.IsActive && CameraManager.IsReady && CameraManager.HasUsableViewMatrix;
                 // Treat the camera as stale if no scatter read landed in the last ~750ms
                 // (e.g. mid-respawn while FPSCamera is being re-resolved). Drawing against a
@@ -339,8 +355,8 @@ namespace eft_dma_radar.Arena.UI
                         float scaleY = winSize.Y / (float)vpH;
                         canvas.Save();
                         canvas.Scale(scaleX, scaleY);
-                        // Use local player when alive; otherwise fall back to the live camera
-                        // position so spectator/death view still renders other players.
+                        // Local player is alive at this point (early-out above);
+                        // originPos is its actual position for distance/W2S work.
                         Vector3 originPos = (local is not null && local.HasValidPosition)
                             ? local.Position
                             : CameraManager.WorldPosition;

@@ -31,6 +31,19 @@ namespace eft_dma_radar.Arena.Config
         [JsonPropertyName("il2cppDump")]
         public bool Il2CppDump { get; set; } = false;
 
+        /// <summary>
+        /// Enables <see cref="ExceptionTracer"/> — first-chance VmmException /
+        /// BadPtrException hook that logs each unique call site (with full
+        /// stack trace) exactly once. Use it to answer "which read is the one
+        /// throwing the VmmException I see in the debugger?" Capped at 200
+        /// distinct sites per session so it self-limits even when a read
+        /// fails on every tick. Independent of <see cref="DebugLogging"/>.
+        /// Also togglable via the <c>ARENA_TRACE_DMA_EXCEPTIONS</c> env var
+        /// for pre-launch debugging.
+        /// </summary>
+        [JsonPropertyName("traceDmaExceptions")]
+        public bool TraceDmaExceptions { get; set; } = false;
+
         // ── Window ────────────────────────────────────────────────────────────
 
         [JsonPropertyName("windowWidth")]
@@ -163,6 +176,19 @@ namespace eft_dma_radar.Arena.Config
         /// <summary>Per-map actor name patterns. Key = MapId (case-insensitive).</summary>
         [JsonPropertyName("visCheckMapNamePatterns")]
         public Dictionary<string, string[]> VisCheckMapNamePatterns { get; set; } = new();
+
+        /// <summary>
+        /// Global force-blocker name substrings. Actors matching any of these
+        /// are classified as blockers even when the see-through rules (layer
+        /// mask or name patterns) would have made them see-through. Inverse
+        /// of <see cref="VisCheckGlobalNamePatterns"/>; takes precedence.
+        /// </summary>
+        [JsonPropertyName("visCheckGlobalBlockerPatterns")]
+        public string[] VisCheckGlobalBlockerPatterns { get; set; } = [];
+
+        /// <summary>Per-map force-blocker name patterns. Key = MapId (case-insensitive).</summary>
+        [JsonPropertyName("visCheckMapBlockerPatterns")]
+        public Dictionary<string, string[]> VisCheckMapBlockerPatterns { get; set; } = new();
 
         /// <summary>Max ray cast distance (metres). Players beyond this default to visible.</summary>
         [JsonPropertyName("visCheckMaxRayDistance")]

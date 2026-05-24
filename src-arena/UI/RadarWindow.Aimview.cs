@@ -75,6 +75,14 @@ namespace eft_dma_radar.Arena.UI
                 return;
             }
 
+            // Spectator gate. Camera worker freezes UpdateCamera when local is
+            // dead, so the cached view matrix is locked to the moment-of-death
+            // POV. Aimview would otherwise project moving enemies through that
+            // frozen basis and have markers drift off-target. Render a clear
+            // "Spectating" placeholder instead so the user knows to expect no
+            // updates until respawn.
+            bool spectating = local is not null && !local.IsAlive;
+
             ImGui.SetNextWindowSizeConstraints(new Vector2(200, 140), new Vector2(1024, 768));
             ImGui.SetNextWindowSize(new Vector2(360, 240), ImGuiCond.FirstUseEver);
 
@@ -109,6 +117,18 @@ namespace eft_dma_radar.Arena.UI
                 var center = contentMin + contentSize * 0.5f;
                 drawList.AddLine(new Vector2(contentMin.X, center.Y), new Vector2(contentMax.X, center.Y), _avColorCrosshair);
                 drawList.AddLine(new Vector2(center.X, contentMin.Y), new Vector2(center.X, contentMax.Y), _avColorCrosshair);
+
+                // Spectator early-out — skip the projection loop entirely and
+                // surface a clear status label centred in the widget. Drawn
+                // over the background + crosshair so the user still sees the
+                // widget is alive (just paused).
+                if (spectating)
+                {
+                    const string label = "Spectating";
+                    var size = ImGui.CalcTextSize(label);
+                    drawList.AddText(center - size * 0.5f, _avColorCrosshair, label);
+                    return;
+                }
 
                 // Eye position — fall back to body root + configurable offset, or to
                 // the live camera world position when local player is dead/missing.

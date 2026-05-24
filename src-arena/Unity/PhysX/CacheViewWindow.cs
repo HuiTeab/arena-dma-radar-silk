@@ -2,6 +2,7 @@ using ImGuiNET;
 using System.Collections.Generic;
 using System.Linq;
 using eft_dma_radar.Arena.DMA;
+using VmmSharpEx.Options;
 
 namespace eft_dma_radar.Arena.Unity.PhysX
 {
@@ -140,6 +141,65 @@ namespace eft_dma_radar.Arena.Unity.PhysX
         private static bool  _showPlayerNames  = true;
         private static bool  _dimVisiblePlayers = false; // when on, players already visible to LP draw at half alpha
         private static float _playerMarkerHeight = 1.8f; // metres — drawn as a vertical line from feet up
+
+        // ── Live PhysX overlay (PlayerSuperior + Base Human bones) ───────────
+        // The snapshot already contains capsule actors named "PlayerSuperior(Clone)"
+        // (player bodies, layer 8 on Arena_Bay5 — varies per map) and
+        // "Base Human*" (bones — head, calves, thighs, etc.). They render
+        // correctly in the regular wireframe pass but use the snapshot-build-time
+        // pose, so they appear frozen. This overlay re-reads each tracked
+        // actor's NpRigidDynamic_BufferedBody2World transform every render
+        // tick (rate-limited) and re-draws the capsule + bone skeleton at
+        // live positions — turning the cache view into a PhysX-sourced 3D
+        // radar that doesn't depend on the IL2CPP / managed player list.
+        private static bool _showLivePhysxPlayers = false;
+        private static bool _showLivePhysxBones   = false;
+        // 100 ms = 10 Hz refresh — enough for radar-style tracking, low
+        // enough that 8 players × 17 capsules each (1 body + 16 bones) at
+        // ~100 reads per refresh stays well under the budget of every other
+        // worker.
+        private const int LivePhysxRefreshMs = 100;
+        // Cached per-snapshot index lists so we don't re-scan ~10k actor
+        // names per frame. Rebuilt only when the snapshot reference changes.
+        private static SceneSnapshot? _livePhysxSnapshotRef;
+        private static readonly List<int> _livePhysxPlayerIndices = new();
+        private static readonly List<int> _livePhysxBoneIndices   = new();
+        // Live pose dict — indexed by snapshot-relative actor index. Stays
+        // valid across snapshot swaps because the index lists are rebuilt at
+        // the same time and stale entries simply never get re-read.
+        private static readonly Dictionary<int, PxTransform> _livePhysxPoses = new();
+        // Per-actor transform-offset cache. Reading PxConcreteType once per
+        // actor is far cheaper than scanning both candidate offsets every
+        // refresh — and the first attempt at the wrong offset previously
+        // produced invalid poses that the validity gate silently dropped
+        // (the symptom the user hit: PlayerSuperior worked because the
+        // 0x140 dynamic offset was right, but Base Human bones returned
+        // garbage so nothing rendered). 0 = "unresolved", any non-zero
+        // value is the resolved offset to use forever after.
+        private static readonly Dictionary<int, uint> _livePhysxTransformOffsets = new();
+        // Sentinel = "tried, can't resolve" so we don't keep probing dead
+        // actor pointers each refresh.
+        private const uint LivePhysxOffsetFailed = 0xFFFFFFFFu;
+        private static long _livePhysxLastRefreshMs;
+        // Cosmetic settings — kept distinct from the regular wireframe colour
+        // scheme so the live capsules stand out against the cached geometry.
+        private const uint ColorLivePhysxPlayer = 0xFF40FFFFu; // cyan
+        private const uint ColorLivePhysxBone   = 0xFF40FF40u; // green
+
+        // ── IL2CPP skeleton overlay ──────────────────────────────────────────
+        // The PhysX bone capsules path above relies on PhysX-side rigid bodies
+        // that may or may not exist for every player (engine-dependent). The
+        // managed-side Skeleton (Player.Skeleton.GetBonePosition) is always
+        // populated for every active player by the camera worker's batch
+        // scatter — so this overlay is the reliable per-player skeleton in
+        // 3D, even when the PhysX bones path comes up dry.
+        private static bool _showSkeletonBones = false;
+        // Dots at each joint in addition to the line skeleton. Off by default
+        // because the line skeleton is enough to read pose; the dots are
+        // useful when correlating against the PhysX bone capsules.
+        private static bool _showSkeletonJoints = false;
+        private const uint ColorSkeletonLocal = 0xFF20FF20u; // green
+        private const uint ColorSkeletonEnemy = 0xFF4040FFu; // red
 
         /// <summary>
         /// How the wireframe colour is chosen per actor.
@@ -399,6 +459,23 @@ namespace eft_dma_radar.Arena.Unity.PhysX
                     }
                 }
             }
+
+            // ── Live PhysX overlay (player capsules + bones) ──
+            // PhysX-direct player tracking — re-reads the buffered
+            // body-to-world transform of every "PlayerSuperior(Clone)" +
+            // "Base Human*" capsule and re-renders it at the live pose.
+            // Index lists + pose cache rebuilt on snapshot change; refresh
+            // is rate-limited internally to LivePhysxRefreshMs.
+            RebuildLivePhysxIndicesIfStale(snap);
+            if (_showLivePhysxPlayers || _showLivePhysxBones)
+            {
+                RefreshLivePhysxPoses(snap);
+                DrawLivePhysxOverlay(dl, snap, viewProj, vpOrigin, vpSize);
+            }
+
+            // ── IL2CPP skeleton overlay ──────────────────────
+            // No DMA — projects already-populated bone positions.
+            DrawSkeletonOverlay(dl, viewProj, vpOrigin, vpSize);
 
             // ── Tooltip on hover ──────────────────────────────
             if (hoverPick is not null)
@@ -918,6 +995,344 @@ namespace eft_dma_radar.Arena.Unity.PhysX
                 ImGui.SliderFloat("Height##pl", ref _playerMarkerHeight, 0.5f, 3.0f, "%.1f m");
                 ImGui.Unindent();
             }
+
+            // ── Live PhysX overlay sub-section ──────────────────────────────
+            ImGui.Spacing();
+            ImGui.TextDisabled("PhysX-sourced overlay (live capsules)");
+
+            // Show counts inline so the user can confirm the snapshot actually
+            // has player/bone actors before turning the toggles on.
+            int nPlayers = _livePhysxPlayerIndices.Count;
+            int nBones   = _livePhysxBoneIndices.Count;
+            ImGui.TextDisabled($"  found in snapshot: {nPlayers} players, {nBones} bones");
+
+            ImGui.Checkbox("Player capsules##live", ref _showLivePhysxPlayers);
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "Re-read every \"PlayerSuperior(Clone)\" capsule's live\n" +
+                    "PhysX transform and re-draw it on top of the cached\n" +
+                    "wireframe. PhysX-direct player tracking — independent\n" +
+                    $"of the IL2CPP player list. Refresh: {LivePhysxRefreshMs} ms.");
+
+            ImGui.Checkbox("Bone capsules##live", ref _showLivePhysxBones);
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "Same idea for \"Base Human*\" bone capsules (head, calves,\n" +
+                    "thighs, etc.) — gives you a per-player skeleton overlay\n" +
+                    "purely from PhysX. ~16 bones per player; gets expensive\n" +
+                    "fast if the lobby is full.");
+
+            ImGui.Spacing();
+            ImGui.TextDisabled("IL2CPP skeleton (per-player bone positions)");
+            ImGui.Checkbox("Skeleton lines##il2cpp", ref _showSkeletonBones);
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "Draw a connected skeleton per active player using the\n" +
+                    "managed-side bone positions read by the camera worker.\n" +
+                    "Independent of the PhysX bone path — works for every\n" +
+                    "player whose skeleton has resolved, even when PhysX bone\n" +
+                    "capsules aren't in the scene. Green=local, red=enemy.");
+            ImGui.Checkbox("Joint dots##il2cpp", ref _showSkeletonJoints);
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "Draw a small dot at each joint on top of the skeleton lines.\n" +
+                    "Useful when correlating against the PhysX bone capsules.");
+        }
+
+        /// <summary>
+        /// Snapshot-change-triggered scan that builds the index lists of
+        /// PlayerSuperior + Base Human* actors. Cheap (one pass over the
+        /// names) and only runs when the snapshot reference flips.
+        /// </summary>
+        private static void RebuildLivePhysxIndicesIfStale(SceneSnapshot snap)
+        {
+            if (ReferenceEquals(snap, _livePhysxSnapshotRef)) return;
+            _livePhysxSnapshotRef = snap;
+            _livePhysxPlayerIndices.Clear();
+            _livePhysxBoneIndices.Clear();
+            _livePhysxPoses.Clear();
+            // New snapshot ⇒ ActorBase pointers are new ⇒ resolved offsets
+            // from the old snapshot are stale. Wipe and re-probe on next refresh.
+            _livePhysxTransformOffsets.Clear();
+            for (int i = 0; i < snap.Actors.Length; i++)
+            {
+                var nm = snap.Actors[i].Name;
+                if (string.IsNullOrEmpty(nm)) continue;
+                if (nm.Contains("PlayerSuperior", StringComparison.OrdinalIgnoreCase))
+                    _livePhysxPlayerIndices.Add(i);
+                else if (nm.StartsWith("Base Human", StringComparison.OrdinalIgnoreCase))
+                    _livePhysxBoneIndices.Add(i);
+            }
+        }
+
+        /// <summary>
+        /// Scatter-reads the buffered body-to-world transform from every
+        /// tracked actor pointer and stores the result in
+        /// <see cref="_livePhysxPoses"/>. Rate-limited to
+        /// <see cref="LivePhysxRefreshMs"/> so a high UI framerate doesn't
+        /// turn into 60 Hz DMA traffic. Silently skips actors with invalid
+        /// pointers — happens during snapshot transitions / player
+        /// despawns / etc. Costs one scatter batch per refresh regardless
+        /// of how many actors are tracked.
+        /// </summary>
+        private static void RefreshLivePhysxPoses(SceneSnapshot snap)
+        {
+            if (_livePhysxPlayerIndices.Count == 0 && _livePhysxBoneIndices.Count == 0) return;
+            long now = Environment.TickCount64;
+            if (now - _livePhysxLastRefreshMs < LivePhysxRefreshMs) return;
+            _livePhysxLastRefreshMs = now;
+
+            try
+            {
+                // Two phases: (1) resolve PxConcreteType for any actors we
+                // haven't probed yet, (2) issue the actual pose scatter using
+                // each actor's resolved offset. Phase 1 runs at most once per
+                // actor over the snapshot's lifetime, so the steady state is
+                // a single scatter batch per refresh tick.
+                if (_showLivePhysxPlayers) ResolveOffsetsIfNeeded(snap, _livePhysxPlayerIndices);
+                if (_showLivePhysxBones)   ResolveOffsetsIfNeeded(snap, _livePhysxBoneIndices);
+
+                using var scatter = Memory.GetScatter(VmmFlags.NOCACHE);
+                if (_showLivePhysxPlayers)
+                    PreparePoseReads(scatter, snap, _livePhysxPlayerIndices);
+                if (_showLivePhysxBones)
+                    PreparePoseReads(scatter, snap, _livePhysxBoneIndices);
+                scatter.Execute();
+                if (_showLivePhysxPlayers)
+                    CollectPoseReads(scatter, snap, _livePhysxPlayerIndices);
+                if (_showLivePhysxBones)
+                    CollectPoseReads(scatter, snap, _livePhysxBoneIndices);
+            }
+            catch (Exception ex)
+            {
+                Log.WriteRateLimited(AppLogLevel.Warning, "live_physx_refresh",
+                    TimeSpan.FromSeconds(5),
+                    $"[CacheView] Live PhysX refresh failed: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Reads <see cref="PhysXOffsets.PxBase_ConcreteType"/> for any actor
+        /// that hasn't had its transform-offset resolved yet, then caches the
+        /// right offset (<c>0x140</c> for dynamic, <c>0x90</c> for static).
+        /// Issued as a single scatter batch so even N=128 actors take one
+        /// DMA round-trip the first time the user turns the toggle on.
+        /// </summary>
+        private static void ResolveOffsetsIfNeeded(SceneSnapshot snap, List<int> indices)
+        {
+            // Quick check: any actors missing an offset entry?
+            bool anyUnresolved = false;
+            for (int i = 0; i < indices.Count; i++)
+            {
+                if (!_livePhysxTransformOffsets.ContainsKey(indices[i])) { anyUnresolved = true; break; }
+            }
+            if (!anyUnresolved) return;
+
+            using var scatter = Memory.GetScatter(VmmFlags.NOCACHE);
+            for (int i = 0; i < indices.Count; i++)
+            {
+                int idx = indices[i];
+                if (_livePhysxTransformOffsets.ContainsKey(idx)) continue;
+                ulong basePtr = snap.Actors[idx].ActorBase;
+                if (basePtr == 0) { _livePhysxTransformOffsets[idx] = LivePhysxOffsetFailed; continue; }
+                scatter.PrepareReadValue<ushort>(basePtr + PhysXOffsets.PxBase_ConcreteType);
+            }
+            scatter.Execute();
+            for (int i = 0; i < indices.Count; i++)
+            {
+                int idx = indices[i];
+                if (_livePhysxTransformOffsets.ContainsKey(idx)) continue;
+                ulong basePtr = snap.Actors[idx].ActorBase;
+                if (basePtr == 0) continue;
+                if (!scatter.ReadValue<ushort>(basePtr + PhysXOffsets.PxBase_ConcreteType, out var typeRaw))
+                {
+                    _livePhysxTransformOffsets[idx] = LivePhysxOffsetFailed;
+                    continue;
+                }
+                _livePhysxTransformOffsets[idx] = (PxConcreteType)typeRaw == PxConcreteType.RigidDynamic
+                    ? PhysXOffsets.NpRigidDynamic_BufferedBody2World
+                    : PhysXOffsets.NpRigidStatic_BodyToWorld;
+            }
+        }
+
+        private static void PreparePoseReads(VmmSharpEx.Scatter.VmmScatter scatter,
+            SceneSnapshot snap, List<int> indices)
+        {
+            for (int i = 0; i < indices.Count; i++)
+            {
+                int idx = indices[i];
+                if (idx < 0 || idx >= snap.Actors.Length) continue;
+                ulong basePtr = snap.Actors[idx].ActorBase;
+                if (basePtr == 0) continue;
+                if (!_livePhysxTransformOffsets.TryGetValue(idx, out var off)
+                    || off == LivePhysxOffsetFailed) continue;
+                scatter.PrepareReadValue<PxTransform>(basePtr + off);
+            }
+        }
+
+        private static void CollectPoseReads(VmmSharpEx.Scatter.VmmScatter scatter,
+            SceneSnapshot snap, List<int> indices)
+        {
+            for (int i = 0; i < indices.Count; i++)
+            {
+                int idx = indices[i];
+                if (idx < 0 || idx >= snap.Actors.Length) continue;
+                ulong basePtr = snap.Actors[idx].ActorBase;
+                if (basePtr == 0) continue;
+                if (!_livePhysxTransformOffsets.TryGetValue(idx, out var off)
+                    || off == LivePhysxOffsetFailed) continue;
+                if (scatter.ReadValue<PxTransform>(basePtr + off, out var pose)
+                    && pose.IsFinite && pose.IsRotationUnit)
+                {
+                    _livePhysxPoses[idx] = pose;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Renders a per-player skeleton from the managed-side
+        /// <see cref="GameWorld.Players.Skeleton"/> data. Each active player
+        /// contributes up to 14 line segments (head→neck→torso→pelvis,
+        /// pelvis→knee→foot ×2, collar→elbow→hand ×2) projected through
+        /// the same camera matrix as the wireframe pass. No DMA — reads only
+        /// the already-populated bone arrays the camera worker filled.
+        /// </summary>
+        private static void DrawSkeletonOverlay(ImDrawListPtr dl,
+            Matrix4x4 viewProj, Vector2 vpOrigin, Vector2 vpSize)
+        {
+            if (!_showSkeletonBones && !_showSkeletonJoints) return;
+            var gw = Memory.CurrentGameWorld;
+            if (gw is null) return;
+
+            float rangeSq = _renderRange * _renderRange;
+
+            foreach (var p in gw.Players)
+            {
+                if (!p.IsActive || !p.IsAlive) continue;
+                var skel = p.Skeleton;
+                if (skel is null) continue;
+
+                // Distance cull on the body anchor — if the whole player is
+                // out of range, skip the per-bone work. Falls back to feet
+                // position when no bone has resolved yet.
+                Vector3 anchorWorld = skel.GetBonePosition(Arena.Unity.Bones.HumanSpine2)
+                    ?? skel.GetBonePosition(Arena.Unity.Bones.HumanPelvis)
+                    ?? p.Position;
+                if (Vector3.DistanceSquared(_camPos, anchorWorld) > rangeSq) continue;
+
+                uint color = p.IsLocalPlayer ? ColorSkeletonLocal : ColorSkeletonEnemy;
+                DrawPlayerSkeleton(dl, skel, color, viewProj, vpOrigin, vpSize);
+            }
+        }
+
+        /// <summary>
+        /// Renders one player's skeleton — projects every tracked bone, then
+        /// emits the same 14-segment connectivity the
+        /// <see cref="GameWorld.Players.Skeleton.UpdateScreenBuffer"/> 2D
+        /// path uses. Bones that fail to project (behind camera / not yet
+        /// resolved) drop the entire segment they participate in — better
+        /// than drawing degenerate lines to (0,0).
+        /// </summary>
+        private static void DrawPlayerSkeleton(ImDrawListPtr dl,
+            GameWorld.Players.Skeleton skel, uint color,
+            Matrix4x4 viewProj, Vector2 vpOrigin, Vector2 vpSize)
+        {
+            // Project every joint we care about. Returns null for any bone
+            // that isn't resolved AND null for any bone that's behind the
+            // camera — both cases collapse to the same "skip" handling.
+            Vector2? P(Arena.Unity.Bones b)
+            {
+                var w = skel.GetBonePosition(b);
+                if (!w.HasValue) return null;
+                return Project(w.Value, viewProj, vpOrigin, vpSize, out var s) ? s : null;
+            }
+
+            var head    = P(Arena.Unity.Bones.HumanHead);
+            var neck    = P(Arena.Unity.Bones.HumanNeck);
+            var upper   = P(Arena.Unity.Bones.HumanSpine3);
+            var mid     = P(Arena.Unity.Bones.HumanSpine2);
+            var lower   = P(Arena.Unity.Bones.HumanSpine1);
+            var pelvis  = P(Arena.Unity.Bones.HumanPelvis);
+            var lCollar = P(Arena.Unity.Bones.HumanLCollarbone);
+            var rCollar = P(Arena.Unity.Bones.HumanRCollarbone);
+            var lElbow  = P(Arena.Unity.Bones.HumanLForearm2);
+            var rElbow  = P(Arena.Unity.Bones.HumanRForearm2);
+            var lHand   = P(Arena.Unity.Bones.HumanLPalm);
+            var rHand   = P(Arena.Unity.Bones.HumanRPalm);
+            var lKnee   = P(Arena.Unity.Bones.HumanLThigh2);
+            var rKnee   = P(Arena.Unity.Bones.HumanRThigh2);
+            var lFoot   = P(Arena.Unity.Bones.HumanLFoot);
+            var rFoot   = P(Arena.Unity.Bones.HumanRFoot);
+
+            // Local helper that drops a segment when either endpoint is null.
+            void S(Vector2? a, Vector2? b)
+            {
+                if (a.HasValue && b.HasValue) dl.AddLine(a.Value, b.Value, color, 1.5f);
+            }
+
+            if (_showSkeletonBones)
+            {
+                // Spine chain (head → neck → upper → mid → lower → pelvis)
+                S(head, neck); S(neck, upper); S(upper, mid); S(mid, lower); S(lower, pelvis);
+                // Arms
+                S(upper, lCollar); S(lCollar, lElbow); S(lElbow, lHand);
+                S(upper, rCollar); S(rCollar, rElbow); S(rElbow, rHand);
+                // Legs
+                S(pelvis, lKnee); S(lKnee, lFoot);
+                S(pelvis, rKnee); S(rKnee, rFoot);
+            }
+
+            if (_showSkeletonJoints)
+            {
+                void D(Vector2? p) { if (p.HasValue) dl.AddCircleFilled(p.Value, 3f, color, 6); }
+                D(head); D(neck); D(upper); D(mid); D(lower); D(pelvis);
+                D(lCollar); D(rCollar); D(lElbow); D(rElbow); D(lHand); D(rHand);
+                D(lKnee);   D(rKnee);   D(lFoot); D(rFoot);
+            }
+        }
+
+        /// <summary>
+        /// Render pass for the live PhysX overlay. Called after the regular
+        /// geometry pass + blocker highlights so the live capsules always
+        /// end up on top. Reads the cached pose dict — empty until the next
+        /// refresh tick fills it.
+        /// </summary>
+        private static void DrawLivePhysxOverlay(ImDrawListPtr dl, SceneSnapshot snap,
+            Matrix4x4 viewProj, Vector2 vpOrigin, Vector2 vpSize)
+        {
+            if (!_showLivePhysxPlayers && !_showLivePhysxBones) return;
+
+            float rangeSq = _renderRange * _renderRange;
+
+            if (_showLivePhysxPlayers)
+            {
+                for (int i = 0; i < _livePhysxPlayerIndices.Count; i++)
+                {
+                    int idx = _livePhysxPlayerIndices[i];
+                    if (!_livePhysxPoses.TryGetValue(idx, out var pose)) continue;
+                    if (idx < 0 || idx >= snap.Actors.Length) continue;
+                    var a = snap.Actors[idx];
+                    // Distance cull matches the geometry pass — keeps the
+                    // overlay's drawing budget honest at long render ranges.
+                    if (Vector3.DistanceSquared(_camPos, pose.Position) > rangeSq) continue;
+                    DrawCapsuleAt(dl, pose, a.PrimitiveSize.X, a.PrimitiveSize.Y,
+                        viewProj, vpOrigin, vpSize, ColorLivePhysxPlayer, 2f);
+                }
+            }
+
+            if (_showLivePhysxBones)
+            {
+                for (int i = 0; i < _livePhysxBoneIndices.Count; i++)
+                {
+                    int idx = _livePhysxBoneIndices[i];
+                    if (!_livePhysxPoses.TryGetValue(idx, out var pose)) continue;
+                    if (idx < 0 || idx >= snap.Actors.Length) continue;
+                    var a = snap.Actors[idx];
+                    if (Vector3.DistanceSquared(_camPos, pose.Position) > rangeSq) continue;
+                    DrawCapsuleAt(dl, pose, a.PrimitiveSize.X, a.PrimitiveSize.Y,
+                        viewProj, vpOrigin, vpSize, ColorLivePhysxBone, 1f);
+                }
+            }
         }
 
         private static void DrawVisOverlaySection()
@@ -1344,11 +1759,21 @@ namespace eft_dma_radar.Arena.Unity.PhysX
         /// </summary>
         private static void DrawCapsuleShape(ImDrawListPtr dl, CachedActor a,
             Matrix4x4 viewProj, Vector2 vpOrigin, Vector2 vpSize, uint color)
+            => DrawCapsuleAt(dl, a.WorldTransform, a.PrimitiveSize.X, a.PrimitiveSize.Y,
+                             viewProj, vpOrigin, vpSize, color, 1f);
+
+        /// <summary>
+        /// Capsule renderer parametrised on transform + radius + half-height
+        /// instead of a <see cref="CachedActor"/>. The live PhysX overlay
+        /// (PlayerSuperior + Base Human bones) calls this with a freshly-read
+        /// transform per frame, so we can re-render the capsule at its
+        /// current world pose without mutating the immutable snapshot.
+        /// </summary>
+        private static void DrawCapsuleAt(ImDrawListPtr dl,
+            PxTransform tr, float r, float hh,
+            Matrix4x4 viewProj, Vector2 vpOrigin, Vector2 vpSize, uint color, float thickness)
         {
-            float r  = a.PrimitiveSize.X;
-            float hh = a.PrimitiveSize.Y;
             if (r <= 0f) return;
-            var tr = a.WorldTransform;
 
             Vector3 axisX = tr.TransformDirection(Vector3.UnitX);
             Vector3 axisY = tr.TransformDirection(Vector3.UnitY);
@@ -1367,7 +1792,7 @@ namespace eft_dma_radar.Arena.Unity.PhysX
                 Vector3 o = axisY * MathF.Cos(t) * r + axisZ * MathF.Sin(t) * r;
                 if (Project(endA + o, viewProj, vpOrigin, vpSize, out var pa)
                     && Project(endB + o, viewProj, vpOrigin, vpSize, out var pb))
-                    dl.AddLine(pa, pb, color, 1f);
+                    dl.AddLine(pa, pb, color, thickness);
             }
 
             // Two half-circle wireframes per endcap forming a hemisphere outline.

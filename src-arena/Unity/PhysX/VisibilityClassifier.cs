@@ -220,8 +220,29 @@ namespace eft_dma_radar.Arena.Unity.PhysX
         public static void Reclassify(SceneSnapshot snapshot)
         {
             if (snapshot is null || snapshot.IsEmpty) return;
+
+            // Track flips so the diagnostic hook can report "your new pattern
+            // moved N actors to see-through, M back to blocker" — much more
+            // useful than just "rules changed".
+            int flipsToSee = 0, flipsToBlock = 0;
             foreach (var a in snapshot.Actors)
-                a.IsSeeThrough = Classify(snapshot.MapId, a.ShapeLayerMask, a.Name);
+            {
+                bool prev = a.IsSeeThrough;
+                bool now  = Classify(snapshot.MapId, a.ShapeLayerMask, a.Name);
+                if (prev != now)
+                {
+                    if (now) flipsToSee++;
+                    else     flipsToBlock++;
+                }
+                a.IsSeeThrough = now;
+            }
+
+            VisCheckDiagnostics.OnClassifierChanged(
+                trigger:           "Reclassify",
+                newLayerMask:      Raycaster.SeeThroughLayerMask,
+                newGlobalPatterns: GlobalNamePatterns,
+                flipsToSeeThrough: flipsToSee,
+                flipsToBlocker:    flipsToBlock);
         }
 
         /// <summary>

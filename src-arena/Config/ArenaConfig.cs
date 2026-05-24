@@ -180,6 +180,23 @@ namespace eft_dma_radar.Arena.Config
         [JsonPropertyName("visCheckBonePelvis")]
         public bool VisCheckBonePelvis { get; set; } = true;
 
+        // ── VisCheck diagnostic logging ──────────────────────────────────────
+        // All three default OFF — the logs are useful for offline analysis but
+        // a 10k-actor JSONL dump (~3 MB) on every build and a 16 KB/s tick log
+        // are not what a casual user wants flushing to disk by default.
+
+        /// <summary>Auto-dump the full PhysX snapshot to JSONL on every SceneCache build/load.</summary>
+        [JsonPropertyName("visCheckDiagDumpSnapshot")]
+        public bool VisCheckDiagDumpSnapshot { get; set; } = false;
+
+        /// <summary>Append one JSONL line per (tick, player) result to a session-scoped tick log file.</summary>
+        [JsonPropertyName("visCheckDiagLogTicks")]
+        public bool VisCheckDiagLogTicks { get; set; } = false;
+
+        /// <summary>Append one JSONL line per classifier rule edit + reclassification stats.</summary>
+        [JsonPropertyName("visCheckDiagLogClassifier")]
+        public bool VisCheckDiagLogClassifier { get; set; } = false;
+
         // ── Persistence ───────────────────────────────────────────────────────
 
         public static ArenaConfig Load()

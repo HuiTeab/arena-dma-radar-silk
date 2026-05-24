@@ -41,6 +41,7 @@ namespace eft_dma_radar.Arena
                 // Apply persisted vischeck classifier settings (layer mask, name patterns, bone toggles).
                 VisibilityClassifier.LoadFromConfig(Config);
                 VisibilityWorker.LoadFromConfig(Config);
+                VisCheckDiagnostics.LoadFromConfig(Config);
 
                 // Launch minimal radar window (blocks until user closes it).
                 eft_dma_radar.Arena.UI.RadarWindow.Run();

@@ -174,6 +174,7 @@ namespace eft_dma_radar.Arena.Unity.PhysX
                     $"[SceneCache] Offline-loaded '{mapId}' in {sw.ElapsedMilliseconds}ms: " +
                     $"actors={cached.Actors.Length} triMeshes={cached.Meshes.Length} " +
                     $"heightfields={cached.HeightFields.Length}");
+                VisCheckDiagnostics.OnSnapshotBuilt(cached);
                 return true;
             }
             finally
@@ -226,6 +227,7 @@ namespace eft_dma_radar.Arena.Unity.PhysX
                             $"actors={cached.Actors.Length} triMeshes={cached.Meshes.Length} " +
                             $"heightfields={cached.HeightFields.Length} (originally built " +
                             $"{(Environment.TickCount64 - cached.BuildTickMs) / 1000}s ago)");
+                        VisCheckDiagnostics.OnSnapshotBuilt(cached);
                         return;
                     }
                     if (!string.IsNullOrEmpty(loadErr))
@@ -256,6 +258,11 @@ namespace eft_dma_radar.Arena.Unity.PhysX
                         // 100–500 ms even for big maps so blocking the
                         // not-currently-doing-anything build task is fine.
                         SnapshotSerializer.TrySave(fresh, Memory.UnityPlayerVersion);
+
+                        // Diagnostic hook — no-op unless the user enabled the
+                        // snapshot dump toggle. Runs after persistence so a
+                        // failure here can't corrupt the on-disk snapshot file.
+                        VisCheckDiagnostics.OnSnapshotBuilt(fresh);
                     }
                 }
                 catch (Exception ex)
@@ -599,6 +606,22 @@ namespace eft_dma_radar.Arena.Unity.PhysX
                     $"(layer-mask 0x{seeThroughLayerMask:X}→{seeThroughByLayer}, " +
                     $"global-names [{string.Join(",", globalPatterns)}]→{seeThroughByGlobalName}, " +
                     $"map-names ({mapPatterns.Length})→{seeThroughByMapName})");
+
+                // Loud guard: if > 90 % of actors got filtered out as see-through,
+                // vischeck is effectively disabled — the user almost certainly
+                // didn't mean to configure that. Surface it as a WARNING so it's
+                // visible in the console even when buried in normal build output.
+                if (actors.Count > 0)
+                {
+                    double seeThruPct = 100.0 * seeThroughTotal / actors.Count;
+                    if (seeThruPct >= 90.0)
+                    {
+                        Log.Write(AppLogLevel.Warning,
+                            $"[SceneCache] {seeThruPct:F0}% of actors are see-through — vischeck will rarely block. " +
+                            $"Likely cause: SeeThroughLayerMask=0x{seeThroughLayerMask:X} is too broad. " +
+                            $"Open VisCheck Debug (F11) → Classifier Rules → Reset.");
+                    }
+                }
 
                 // Sample of see-through actors so wrongly-filtered colliders
                 // (e.g. an opaque "GlassCabinet" that matched the global "Glass"

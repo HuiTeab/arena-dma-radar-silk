@@ -27,6 +27,15 @@ namespace eft_dma_radar.Arena.Unity.PhysX
         private static bool _colBones     = true;
         private static bool _colBlocker   = true;
 
+        // ── Top blockers state ───────────────────────────────────────────────
+        // Persists across frames so the user can keep a popup open while
+        // looking at the table. Cleared when the popup closes.
+        private static int    _blockerAddPopupActorIdx = -1;
+        private static string _blockerAddPopupName     = "";
+        private static string _blockerCustomPattern    = "";
+        private static string _blockerAddStatus        = "";
+        private static long   _blockerAddStatusMs;
+
         // ── Frame entry point ────────────────────────────────────────────────
 
         public static void Draw()
@@ -81,6 +90,8 @@ namespace eft_dma_radar.Arena.Unity.PhysX
             DrawSnapshotBlock();
             ImGui.Separator();
             DrawWorkerStatsBlock();
+            ImGui.Separator();
+            DrawTopBlockersBlock();
             ImGui.Separator();
             DrawPerPlayerBlock();
         }
@@ -185,6 +196,299 @@ namespace eft_dma_radar.Arena.Unity.PhysX
             ImGui.Text(
                 $"eye: ({stats.EyePos.X:F1}, {stats.EyePos.Y:F1}, {stats.EyePos.Z:F1})  " +
                 $"max-dist={VisibilityWorker.MaxRayDistance:F0}m");
+        }
+
+        /// <summary>
+        /// Aggregated "what's actually blocking my sightlines right now" view —
+        /// the single most useful surface for tuning classifier rules. Each
+        /// row is one actor that's caused ≥1 block in the rolling 30 s window;
+        /// the +SeeThru button opens a smart-pattern picker so the user can
+        /// promote the actor to a see-through rule without typing a substring
+        /// blind from the per-player table.
+        /// </summary>
+        private static void DrawTopBlockersBlock()
+        {
+            var top = BlockerHistory.GetTop(50);
+            int totalHits = BlockerHistory.TotalHits;
+
+            // Header line. Always show it (even when empty) so the user knows
+            // the panel exists and the tracker is running.
+            ImGui.Text(
+                $"Top Blockers (last {BlockerHistory.WindowMs / 1000}s):  " +
+                $"actors={top.Count}  total hits={totalHits}");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "Rolling-window aggregation of which actors have blocked a\n" +
+                    "player sightline. Click the +SeeThru button on a row to add\n" +
+                    "it as a classifier rule (with live impact preview).");
+
+            if (top.Count == 0)
+            {
+                ImGui.TextDisabled("  (nothing has blocked yet — play a few seconds with worker enabled)");
+                MaybeDrawBlockerPopup();
+                return;
+            }
+
+            var snap = SceneCache.Snapshot;
+            long now = Environment.TickCount64;
+
+            // Status line — confirmation of the most recent rule add.
+            if (!string.IsNullOrEmpty(_blockerAddStatus) && now - _blockerAddStatusMs < 4000)
+            {
+                ImGui.TextColored(new Vector4(0.40f, 0.85f, 0.40f, 1f), _blockerAddStatus);
+            }
+
+            // Fixed table height so the Per-Player table below stays usable.
+            // 6 rows visible at standard ImGui line height — scroll for more.
+            const float TableHeight = 140f;
+            if (ImGui.BeginTable("##topblk", 5,
+                    ImGuiTableFlags.RowBg | ImGuiTableFlags.Borders |
+                    ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.ScrollY,
+                    new Vector2(0, TableHeight)))
+            {
+                ImGui.TableSetupColumn("Name",   ImGuiTableColumnFlags.WidthStretch, 1.0f);
+                ImGui.TableSetupColumn("Layer",  ImGuiTableColumnFlags.WidthFixed,   42f);
+                ImGui.TableSetupColumn("Hits",   ImGuiTableColumnFlags.WidthFixed,   48f);
+                ImGui.TableSetupColumn("Players", ImGuiTableColumnFlags.WidthFixed,  56f);
+                ImGui.TableSetupColumn("",       ImGuiTableColumnFlags.WidthFixed,   62f);
+                ImGui.TableSetupScrollFreeze(0, 1);
+                ImGui.TableHeadersRow();
+
+                for (int i = 0; i < top.Count; i++)
+                {
+                    var agg = top[i];
+                    if (agg.ActorIdx < 0 || agg.ActorIdx >= snap.Actors.Length) continue;
+                    var a = snap.Actors[agg.ActorIdx];
+
+                    ImGui.TableNextRow();
+                    int col = 0;
+
+                    ImGui.TableSetColumnIndex(col++);
+                    string display = string.IsNullOrEmpty(a.Name) ? "(unnamed)" : a.Name;
+                    ImGui.TextUnformatted(display);
+                    if (ImGui.IsItemHovered())
+                        ImGui.SetTooltip(
+                            $"Name: {display}\n" +
+                            $"Layer: {a.UnityLayer} (mask 0x{a.ShapeLayerMask:X})\n" +
+                            $"Geometry: {a.GeometryType}\n" +
+                            $"ActorBase: 0x{a.ActorBase:X}\n" +
+                            $"Currently classified: {(a.IsSeeThrough ? "see-through" : "blocker")}");
+
+                    ImGui.TableSetColumnIndex(col++);
+                    ImGui.Text(a.UnityLayer.ToString());
+
+                    ImGui.TableSetColumnIndex(col++);
+                    ImGui.Text(agg.Count.ToString());
+
+                    ImGui.TableSetColumnIndex(col++);
+                    ImGui.Text(agg.UniquePlayers.ToString());
+
+                    ImGui.TableSetColumnIndex(col);
+                    ImGui.PushID(i);
+                    if (ImGui.SmallButton("+SeeThru"))
+                    {
+                        _blockerAddPopupActorIdx = agg.ActorIdx;
+                        _blockerAddPopupName     = a.Name ?? "";
+                        _blockerCustomPattern    = a.Name ?? "";
+                        ImGui.OpenPopup("##add_seethru_popup");
+                    }
+                    if (ImGui.IsItemHovered())
+                        ImGui.SetTooltip(
+                            "Promote this actor to a see-through classifier rule.\n" +
+                            "Opens a picker with full-name / stripped-suffix / prefix\n" +
+                            "options + live match counts so you can pick the right\n" +
+                            "level of broadness before committing.");
+                    ImGui.PopID();
+                }
+                ImGui.EndTable();
+            }
+
+            MaybeDrawBlockerPopup();
+        }
+
+        /// <summary>
+        /// Modal pattern-picker popup. Shows three candidate substrings derived
+        /// from the actor's name — full / stripped / prefix — each with a live
+        /// preview of how many actors the pattern would match and how many of
+        /// those are currently blockers. The user picks one (or types a custom
+        /// substring) and commits.
+        /// </summary>
+        private static void MaybeDrawBlockerPopup()
+        {
+            if (!ImGui.BeginPopup("##add_seethru_popup"))
+                return;
+            try
+            {
+                ImGui.TextDisabled("Add see-through rule for:");
+                ImGui.TextUnformatted(_blockerAddPopupName);
+                ImGui.Separator();
+
+                var (stripped, prefix) = SuggestPatterns(_blockerAddPopupName);
+                var snap = SceneCache.Snapshot;
+
+                ImGui.TextDisabled("Pick a pattern (broader → more matches):");
+
+                DrawPatternCandidate("Full name",   _blockerAddPopupName, snap);
+                if (!string.IsNullOrEmpty(stripped) && stripped != _blockerAddPopupName)
+                    DrawPatternCandidate("Strip _##/numeric tail", stripped, snap);
+                if (!string.IsNullOrEmpty(prefix) && prefix != stripped && prefix != _blockerAddPopupName)
+                    DrawPatternCandidate("Prefix bucket", prefix, snap);
+
+                ImGui.Separator();
+                ImGui.TextDisabled("Or custom substring:");
+                ImGui.SetNextItemWidth(300f);
+                ImGui.InputText("##custom_pat", ref _blockerCustomPattern, 128);
+                int custMatch = string.IsNullOrEmpty(_blockerCustomPattern)
+                    ? 0
+                    : CountMatches(snap, _blockerCustomPattern);
+                ImGui.Text($"  → {custMatch} actor(s) match");
+                ImGui.SameLine();
+                if (ImGui.Button("Add custom") && !string.IsNullOrWhiteSpace(_blockerCustomPattern))
+                {
+                    CommitPattern(_blockerCustomPattern.Trim());
+                    ImGui.CloseCurrentPopup();
+                }
+
+                ImGui.Separator();
+                if (ImGui.Button("Cancel")) ImGui.CloseCurrentPopup();
+            }
+            finally
+            {
+                ImGui.EndPopup();
+            }
+        }
+
+        /// <summary>
+        /// Renders one row in the pattern-picker popup: label + the literal
+        /// pattern string + live "N actors match, M currently blockers" + an
+        /// Apply button. Encapsulates the impact preview so all three candidate
+        /// rows behave identically and the user reads the same shape every time.
+        /// </summary>
+        private static void DrawPatternCandidate(string label, string pattern, SceneSnapshot snap)
+        {
+            ImGui.PushID(label);
+            (int matches, int blockers) = CountMatchesWithBlockerSplit(snap, pattern);
+
+            ImGui.TextUnformatted($"  {label}: \"{pattern}\"");
+            ImGui.TextDisabled($"     → {matches} match, {blockers} currently blocker");
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Apply"))
+            {
+                CommitPattern(pattern);
+                ImGui.CloseCurrentPopup();
+            }
+            ImGui.PopID();
+        }
+
+        /// <summary>
+        /// Heuristic pattern derivation from an actor name. Returns two
+        /// candidate substrings:
+        /// <list type="bullet">
+        ///   <item><c>stripped</c> — the name with the last "_NN" or trailing
+        ///     digit run removed. Catches instance siblings
+        ///     ("Wall_concrete_01", "Wall_concrete_02", ...).</item>
+        ///   <item><c>prefix</c> — everything up to the first separator. The
+        ///     broadest sensible filter; matches the bucketing logic in
+        ///     <see cref="CacheViewWindow"/>.</item>
+        /// </list>
+        /// Either may be the empty string when the input is degenerate
+        /// (single token, all digits, etc.) — the caller suppresses degenerate
+        /// rows so the popup never shows a useless "  → 0 match" entry.
+        /// </summary>
+        private static (string stripped, string prefix) SuggestPatterns(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return ("", "");
+
+            // Strip trailing "_NN" or " NN" or "(NN)" suffix.
+            string stripped = name;
+            int last = stripped.Length;
+            while (last > 0 && (char.IsDigit(stripped[last - 1]) || stripped[last - 1] == ' '
+                                || stripped[last - 1] == '_'    || stripped[last - 1] == '('
+                                || stripped[last - 1] == ')'))
+            {
+                last--;
+            }
+            if (last > 0 && last < stripped.Length) stripped = stripped.Substring(0, last);
+
+            // Prefix bucket — first underscore / space / paren / digit run.
+            string prefix = "";
+            for (int i = 0; i < name.Length; i++)
+            {
+                char c = name[i];
+                if (c == '_' || c == ' ' || c == '(' || c == '-' || (c >= '0' && c <= '9'))
+                {
+                    if (i > 0) prefix = name.Substring(0, i);
+                    break;
+                }
+            }
+            if (string.IsNullOrEmpty(prefix)) prefix = stripped;
+
+            return (stripped, prefix);
+        }
+
+        private static int CountMatches(SceneSnapshot snap, string pattern)
+        {
+            if (string.IsNullOrEmpty(pattern)) return 0;
+            int n = 0;
+            for (int i = 0; i < snap.Actors.Length; i++)
+            {
+                var nm = snap.Actors[i].Name;
+                if (!string.IsNullOrEmpty(nm)
+                    && nm.Contains(pattern, StringComparison.OrdinalIgnoreCase))
+                    n++;
+            }
+            return n;
+        }
+
+        private static (int matches, int blockers) CountMatchesWithBlockerSplit(
+            SceneSnapshot snap, string pattern)
+        {
+            if (string.IsNullOrEmpty(pattern)) return (0, 0);
+            int m = 0, b = 0;
+            for (int i = 0; i < snap.Actors.Length; i++)
+            {
+                var a = snap.Actors[i];
+                if (a.Name is null) continue;
+                if (!a.Name.Contains(pattern, StringComparison.OrdinalIgnoreCase)) continue;
+                m++;
+                if (!a.IsSeeThrough) b++;
+            }
+            return (m, b);
+        }
+
+        /// <summary>
+        /// Adds <paramref name="pattern"/> to the live classifier as a global
+        /// see-through rule, triggers reclassification, persists to config,
+        /// and surfaces a status line so the user sees the change took effect.
+        /// </summary>
+        private static void CommitPattern(string pattern)
+        {
+            if (string.IsNullOrWhiteSpace(pattern)) return;
+
+            // Avoid silently appending duplicates — a no-op duplicate would
+            // confuse the impact preview (the user wonders why nothing changed).
+            var current = VisibilityClassifier.GlobalNamePatterns;
+            foreach (var p in current)
+            {
+                if (string.Equals(p, pattern, StringComparison.OrdinalIgnoreCase))
+                {
+                    _blockerAddStatus   = $"Pattern \"{pattern}\" already exists — no change.";
+                    _blockerAddStatusMs = Environment.TickCount64;
+                    return;
+                }
+            }
+
+            var next = new string[current.Length + 1];
+            current.CopyTo(next, 0);
+            next[current.Length] = pattern;
+            VisibilityClassifier.GlobalNamePatterns = next;
+
+            VisibilityClassifier.Reclassify(SceneCache.Snapshot);
+            VisibilityClassifier.SaveToConfig(ArenaProgram.Config);
+            ArenaProgram.Config.Save();
+
+            _blockerAddStatus   = $"Added \"{pattern}\" — see-through rules now {next.Length}.";
+            _blockerAddStatusMs = Environment.TickCount64;
         }
 
         private static void DrawPerPlayerBlock()
@@ -313,7 +617,11 @@ namespace eft_dma_radar.Arena.Unity.PhysX
         {
             DrawWorkerSettingsSection();
             ImGui.Separator();
+            DrawDiagnosticLoggingSection();
+            ImGui.Separator();
 
+            // Reserve space for the diagnostic section + actions block below
+            // so the classifier scroll doesn't push them off-screen.
             if (ImGui.BeginChild("##vcd_classifier_scroll",
                     new Vector2(0, ImGui.GetContentRegionAvail().Y - 80f), ImGuiChildFlags.None))
             {
@@ -323,6 +631,80 @@ namespace eft_dma_radar.Arena.Unity.PhysX
 
             ImGui.Separator();
             DrawActionsSection();
+        }
+
+        private static void DrawDiagnosticLoggingSection()
+        {
+            ImGui.TextDisabled("Diagnostic Logging");
+
+            bool dumpSnap = VisCheckDiagnostics.DumpSnapshotOnBuild;
+            if (ImGui.Checkbox("Dump snapshot on build##diag", ref dumpSnap))
+            {
+                VisCheckDiagnostics.DumpSnapshotOnBuild = dumpSnap;
+                SaveDiagCfg();
+            }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "After every SceneCache build/load, write the full snapshot to\n" +
+                    "a JSONL file (one line per actor with name, layer, AABB,\n" +
+                    "geometry, classifier verdict). One file per build.\n" +
+                    "Typical size: ~3 MB for 10k actors.");
+
+            bool logTicks = VisCheckDiagnostics.LogVisibilityTicks;
+            if (ImGui.Checkbox("Log visibility ticks##diag", ref logTicks))
+            {
+                VisCheckDiagnostics.LogVisibilityTicks = logTicks;
+                SaveDiagCfg();
+            }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "Append per-player visibility results to a session-scoped log.\n" +
+                    "Throttled to 10 Hz. Rolls over at 50 MB.\n" +
+                    "Each line carries eye + player positions, distance, bone mask,\n" +
+                    "blocker name + geometry, and ray duration.");
+
+            bool logCls = VisCheckDiagnostics.LogClassifierChanges;
+            if (ImGui.Checkbox("Log classifier edits##diag", ref logCls))
+            {
+                VisCheckDiagnostics.LogClassifierChanges = logCls;
+                SaveDiagCfg();
+            }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "After every classifier rule change + reclassification, log\n" +
+                    "the new rules + how many actors flipped see-through ↔ blocker.\n" +
+                    "Use to verify a new name pattern actually moved what you expected.");
+
+            // Action row — dump on demand + folder open. Disabled when there's
+            // no live snapshot to dump.
+            bool hasSnap = SceneCache.Snapshot.Actors.Length > 0;
+            ImGui.BeginDisabled(!hasSnap);
+            if (ImGui.Button("Dump now##diag"))
+                VisCheckDiagnostics.DumpSnapshotNow();
+            if (ImGui.IsItemHovered() && hasSnap)
+                ImGui.SetTooltip("Write the current snapshot to a new JSONL file regardless of toggle.");
+            ImGui.EndDisabled();
+
+            ImGui.SameLine();
+            if (ImGui.Button("Open folder##diag"))
+                VisCheckDiagnostics.OpenLogFolder();
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(VisCheckDiagnostics.OutputDirectory);
+
+            // Last-dump path readout — confirms the file landed and gives the
+            // user something to copy/paste into their analysis tool.
+            var lastDump = VisCheckDiagnostics.LastSnapshotDumpPath;
+            if (!string.IsNullOrEmpty(lastDump))
+                ImGui.TextDisabled($"Last: {Path.GetFileName(lastDump)}");
+            var curTick = VisCheckDiagnostics.CurrentTickLogPath;
+            if (!string.IsNullOrEmpty(curTick))
+                ImGui.TextDisabled($"Tick: {Path.GetFileName(curTick)}");
+        }
+
+        private static void SaveDiagCfg()
+        {
+            VisCheckDiagnostics.SaveToConfig(ArenaProgram.Config);
+            ArenaProgram.Config.Save();
         }
 
         private static void DrawWorkerSettingsSection()

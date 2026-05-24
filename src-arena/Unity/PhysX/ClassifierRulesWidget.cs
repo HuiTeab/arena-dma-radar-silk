@@ -61,6 +61,35 @@ namespace eft_dma_radar.Arena.Unity.PhysX
         {
             uint curMask = Raycaster.SeeThroughLayerMask;
 
+            // ── Foot-gun guard ──────────────────────────────────────────────
+            // A mask of 0xFFFFFFFF (or anything close to it) means "every
+            // layer is see-through" — i.e. nothing ever blocks. The user
+            // hit this exact state in a real match and spent time wondering
+            // why vischeck reported every enemy as visible, so surface it
+            // loudly and offer a one-click reset to the conservative default.
+            int bitsSet = System.Numerics.BitOperations.PopCount(curMask);
+            if (bitsSet >= 16)
+            {
+                ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1.0f, 0.45f, 0.30f, 1f));
+                ImGui.TextUnformatted(curMask == uint.MaxValue
+                    ? "⚠ Mask = 0xFFFFFFFF — EVERY layer see-through, nothing will block."
+                    : $"⚠ Mask has {bitsSet} layers set — broader than usual; check for overreach.");
+                ImGui.PopStyleColor();
+                if (ImGui.SmallButton("Reset to 0x60050000 (16+18+29+30)"))
+                {
+                    Raycaster.SeeThroughLayerMask = 0x60050000u;
+                    _maskHex = $"{Raycaster.SeeThroughLayerMask:X8}";
+                    PersistAndReclassify();
+                }
+                ImGui.SameLine();
+                if (ImGui.SmallButton("Reset to 0x00010000 (layer 16 only)"))
+                {
+                    Raycaster.SeeThroughLayerMask = 0x00010000u;
+                    _maskHex = $"{Raycaster.SeeThroughLayerMask:X8}";
+                    PersistAndReclassify();
+                }
+            }
+
             ImGui.TextDisabled("See-through layer mask:");
 
             // Keep the hex string in sync with the live property — but only when the
@@ -132,11 +161,17 @@ namespace eft_dma_radar.Arena.Unity.PhysX
         {
             ImGui.TextDisabled("Global patterns — applied to every map:");
             var pats = VisibilityClassifier.GlobalNamePatterns;
+            var snap = SceneCache.Snapshot;
 
             for (int i = 0; i < pats.Length; i++)
             {
                 ImGui.PushID($"gp_{i}");
-                ImGui.TextUnformatted($"  \"{pats[i]}\"");
+                // Live actor-count badge next to each existing pattern — answers
+                // the "is this rule still doing anything?" question at a glance.
+                int hits = CountMatches(snap, pats[i]);
+                ImGui.TextUnformatted($"  \"{pats[i]}\"  ");
+                ImGui.SameLine();
+                ImGui.TextDisabled($"({hits} actors)");
                 ImGui.SameLine();
                 if (ImGui.SmallButton("×"))
                 {
@@ -167,6 +202,16 @@ namespace eft_dma_radar.Arena.Unity.PhysX
                 _newGlobalPat = "";
                 PersistAndReclassify();
             }
+            // Live impact preview — re-computed every frame against the current
+            // snapshot so the user sees exactly what their typed pattern would
+            // catch. Splits the count by "currently blocker" so they can tell
+            // whether the rule is broadening or just labelling already-see-through
+            // actors.
+            if (!string.IsNullOrEmpty(_newGlobalPat))
+            {
+                var (matches, blockers) = CountMatchesSplit(snap, _newGlobalPat);
+                ImGui.TextDisabled($"  → {matches} actor(s) match, {blockers} currently blocker");
+            }
         }
 
         // ── Per-map name patterns ─────────────────────────────────────────────
@@ -190,7 +235,10 @@ namespace eft_dma_radar.Arena.Unity.PhysX
             for (int i = 0; i < pats.Length; i++)
             {
                 ImGui.PushID($"mp_{i}");
-                ImGui.TextUnformatted($"  \"{pats[i]}\"");
+                int hits = CountMatches(snap, pats[i]);
+                ImGui.TextUnformatted($"  \"{pats[i]}\"  ");
+                ImGui.SameLine();
+                ImGui.TextDisabled($"({hits} actors)");
                 ImGui.SameLine();
                 if (ImGui.SmallButton("×"))
                 {
@@ -222,6 +270,47 @@ namespace eft_dma_radar.Arena.Unity.PhysX
                 _newMapPat = "";
                 PersistAndReclassify();
             }
+            if (!string.IsNullOrEmpty(_newMapPat))
+            {
+                var (matches, blockers) = CountMatchesSplit(snap, _newMapPat);
+                ImGui.TextDisabled($"  → {matches} actor(s) match, {blockers} currently blocker");
+            }
+        }
+
+        // ── Live-preview helpers ─────────────────────────────────────────────
+        // Substring scan over the snapshot — O(N) per call but N is bounded
+        // (~10k actors max) and these only fire when the UI is open, so the
+        // cost is bounded to whatever the user can see anyway. No caching:
+        // patterns change with every keystroke, and a stale count would be
+        // worse than recomputing.
+
+        private static int CountMatches(SceneSnapshot snap, string pattern)
+        {
+            if (string.IsNullOrEmpty(pattern)) return 0;
+            int n = 0;
+            for (int i = 0; i < snap.Actors.Length; i++)
+            {
+                var nm = snap.Actors[i].Name;
+                if (!string.IsNullOrEmpty(nm)
+                    && nm.Contains(pattern, StringComparison.OrdinalIgnoreCase))
+                    n++;
+            }
+            return n;
+        }
+
+        private static (int matches, int blockers) CountMatchesSplit(SceneSnapshot snap, string pattern)
+        {
+            if (string.IsNullOrEmpty(pattern)) return (0, 0);
+            int m = 0, b = 0;
+            for (int i = 0; i < snap.Actors.Length; i++)
+            {
+                var a = snap.Actors[i];
+                if (a.Name is null) continue;
+                if (!a.Name.Contains(pattern, StringComparison.OrdinalIgnoreCase)) continue;
+                m++;
+                if (!a.IsSeeThrough) b++;
+            }
+            return (m, b);
         }
 
         // ── Reclassify button + feedback ─────────────────────────────────────

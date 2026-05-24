@@ -292,6 +292,17 @@ namespace eft_dma_radar.Arena.Unity.PhysX
                 _lastPerPlayer.Clear();
                 _lastPerPlayer.AddRange(perPlayer);
             }
+
+            // Diagnostic hook — no-op unless the user enabled tick logging.
+            // Passes the same `perPlayer` list to avoid a second alloc/lock
+            // round-trip via the public LastPerPlayer accessor.
+            if (perPlayer.Count > 0)
+                VisCheckDiagnostics.OnVisibilityTick(eye, perPlayer, snap);
+
+            // Always-on rolling-window blocker tracker — feeds the debug
+            // window's "Top Blockers" table. Cheap (O(perPlayer)) and the
+            // window self-prunes, so leaving it always-on costs nothing.
+            BlockerHistory.RecordTick(perPlayer, Environment.TickCount64);
         }
 
         // ── Helpers ──────────────────────────────────────────────────────────

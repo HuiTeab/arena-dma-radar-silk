@@ -1,5 +1,6 @@
 using ImGuiNET;
 using System.Collections.Generic;
+using System.Linq;
 using eft_dma_radar.Arena.DMA;
 
 namespace eft_dma_radar.Arena.Unity.PhysX
@@ -94,9 +95,51 @@ namespace eft_dma_radar.Arena.Unity.PhysX
         // overlaps layer N. All bits set = show all layers (default).
         private static uint   _layerDisplayFilter = uint.MaxValue;
 
+        /// <summary>
+        /// Primary visibility-class filter. <c>All</c> shows every actor that
+        /// passes the other gates, <c>BlockersOnly</c> hides everything
+        /// classified as see-through (the high-signal "real cover" view —
+        /// derived from the live snapshot's name-pattern logs that showed
+        /// glass / cube props dominate the see-through set), and
+        /// <c>SeeThroughOnly</c> is the inverse — useful when tuning the
+        /// classifier rules to confirm what currently gets filtered out.
+        /// </summary>
+        private enum VisFilterMode { All, BlockersOnly, SeeThroughOnly }
+        private static VisFilterMode _visFilter = VisFilterMode.All;
+
+        // BSG's own marker for shootable-through-blocking world geometry —
+        // the snapshot logs showed 86 % of layer-12 blockers on Arena_Prison
+        // carry "_BALLISTIC_" in the name. A one-checkbox high-precision
+        // cover filter is more useful than fighting the layer grid.
+        private static bool _ballisticOnly = false;
+
+        // Hidden name-prefix buckets. Empty = show all. Stored as a HashSet
+        // of bucket strings (e.g. "Prison", "Respawn", "Rock_group") for O(1)
+        // membership checks during the per-frame render loop.
+        private static readonly HashSet<string> _hiddenBuckets =
+            new(StringComparer.OrdinalIgnoreCase);
+
+        // Bucket table cache — rebuilt only when the snapshot reference changes
+        // (snapshots are atomically swapped, so reference-equality is enough).
+        // Without this cache we'd re-scan 7k+ actor names every frame.
+        private static SceneSnapshot? _bucketSnapshotRef;
+        private static List<(string Bucket, int Count)> _bucketsAll = new();
+        private static List<(string Bucket, int Count)> _bucketsBlockers = new();
+        private static string _bucketFilter = ""; // substring filter for the bucket table
+
         // ── Vis-check overlay ─────────────────────────────────────────────────
         private static bool _highlightBlockers = true;  // orange outline around blocking actors
         private static bool _showLiveRays      = false; // draw eye → player rays from last tick
+
+        // ── Live player overlay ──────────────────────────────────────────────
+        // Turns the wireframe cache view into a usable 3D radar — enemy
+        // positions are drawn as ground-anchored marker columns the same way
+        // most 3D radars do it, so the user can correlate cover geometry
+        // with enemy lines-of-sight at a glance.
+        private static bool  _showPlayers      = true;
+        private static bool  _showPlayerNames  = true;
+        private static bool  _dimVisiblePlayers = false; // when on, players already visible to LP draw at half alpha
+        private static float _playerMarkerHeight = 1.8f; // metres — drawn as a vertical line from feet up
 
         /// <summary>
         /// How the wireframe colour is chosen per actor.
@@ -130,6 +173,15 @@ namespace eft_dma_radar.Arena.Unity.PhysX
         private const uint ColorBlockerHighlight = 0xFF0080FFu;  // orange — actor blocking a sightline
         private const uint ColorRayVisible       = 0x6044CC44u;  // semi-transparent green ray
         private const uint ColorRayBlocked       = 0x603232C8u;  // semi-transparent red ray
+
+        // Player marker colours — neutral debug palette so we don't have to
+        // chase team-colour state across player kinds. Local = green, enemy
+        // = red. _dimVisiblePlayers halves the alpha when the visibility
+        // worker has marked the player as visible from the local eye.
+        private const uint ColorPlayerLocal      = 0xFF20FF20u;  // green
+        private const uint ColorPlayerEnemy      = 0xFF4040FFu;  // red
+        private const uint ColorPlayerEnemyDim   = 0x804040FFu;  // half-alpha red
+        private const uint ColorPlayerEnemyAI    = 0xFFB0B0B0u;  // grey (AI / placeholder)
 
         // Layer display filter grid button colours (matches ClassifierRulesWidget scheme).
         private const uint ColLayerActive        = 0xFF2060E0u;  // orange/blue = layer shown
@@ -243,10 +295,21 @@ namespace eft_dma_radar.Arena.Unity.PhysX
                 for (int ai = 0; ai < snap.Actors.Length; ai++)
                 {
                     var a = snap.Actors[ai];
-                    if (!PassesTypeFilter(a.GeometryType))  { culled++; continue; }
-                    if (_hideSeeThrough && a.IsSeeThrough)  { culled++; continue; }
-                    if (!PassesNameFilter(a.Name))          { culled++; continue; }
-                    if (!PassesLayerFilter(a.ShapeLayerMask)) { culled++; continue; }
+                    if (!PassesTypeFilter(a.GeometryType))      { culled++; continue; }
+                    // Legacy "Hide see-through" checkbox is kept in addition
+                    // to the new tri-state VisFilter so existing muscle memory
+                    // still works — both gates have to pass.
+                    if (_hideSeeThrough && a.IsSeeThrough)      { culled++; continue; }
+                    if (!PassesVisFilter(a.IsSeeThrough))       { culled++; continue; }
+                    if (_ballisticOnly
+                        && (a.Name is null
+                            || !a.Name.Contains("BALLISTIC", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        culled++; continue;
+                    }
+                    if (!PassesNameFilter(a.Name))              { culled++; continue; }
+                    if (!PassesLayerFilter(a.ShapeLayerMask))   { culled++; continue; }
+                    if (!PassesBucketFilter(a.Name))            { culled++; continue; }
 
                     Vector3 center = (a.WorldAabbMin + a.WorldAabbMax) * 0.5f;
                     float dist2 = Vector3.DistanceSquared(_camPos, center);
@@ -315,6 +378,24 @@ namespace eft_dma_radar.Arena.Unity.PhysX
                             dl.AddLine(eSc, tSc, rayColor, 1.5f);
                             dl.AddCircle(tSc, 4f, rayColor, 8, 1.5f);
                         }
+                    }
+                }
+            }
+
+            // ── Live player overlay ───────────────────────────
+            // 3D radar — enemy + local positions as ground-anchored vertical
+            // bars with a head dot. Drawn after the wireframe + blocker passes
+            // so player markers always end up on top of geometry. Reads the
+            // realtime worker's already-populated player list — zero extra DMA.
+            if (_showPlayers)
+            {
+                var gw = Memory.CurrentGameWorld;
+                if (gw is not null)
+                {
+                    foreach (var p in gw.Players)
+                    {
+                        if (!p.IsActive || !p.IsAlive || !p.HasValidPosition) continue;
+                        DrawPlayerMarker(dl, p, viewProj, vpOrigin, vpSize);
                     }
                 }
             }
@@ -393,6 +474,9 @@ namespace eft_dma_radar.Arena.Unity.PhysX
             ImGui.Separator();
 
             DrawActorFilterSection();
+            ImGui.Separator();
+
+            DrawPlayerOverlaySection();
             ImGui.Separator();
 
             DrawVisOverlaySection();
@@ -539,14 +623,60 @@ namespace eft_dma_radar.Arena.Unity.PhysX
         {
             ImGui.TextDisabled("Actor Filter");
 
+            // ── Presets row ─────────────────────────────────────────────────
+            // One-click jump to common filter combinations derived from real
+            // log analysis. "Cover only" hides see-through (glass/cubes/etc.)
+            // and turns on BALLISTIC, which together drop the snapshot from
+            // ~7k actors to the ~2k that actually matter for sightlines.
+            if (ImGui.SmallButton("Reset##fp"))    ApplyPreset_Reset();
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Cover only##fp")) ApplyPreset_CoverOnly();
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "Blockers-only + BALLISTIC. Cuts the snapshot to actors that\n" +
+                    "actually stop bullets — empirically ~30 % of the total.");
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Walls##fp"))    ApplyPreset_Walls();
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "Blockers on layer 12 only. Excludes player colliders and\n" +
+                    "the gameplay-trigger layers (18 / 29 / 30) that are\n" +
+                    "always see-through.");
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Debug see-thru##fp")) ApplyPreset_SeeThroughDebug();
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "Inverse view — only actors classified as see-through.\n" +
+                    "Use when tuning classifier rules to spot false positives.");
+
+            // ── Vis-class tri-state ─────────────────────────────────────────
+            int vfm = (int)_visFilter;
+            ImGui.Text("Show:");
+            ImGui.SameLine();
+            if (ImGui.RadioButton("All##vfm",       ref vfm, 0)) _visFilter = (VisFilterMode)vfm;
+            ImGui.SameLine();
+            if (ImGui.RadioButton("Blockers##vfm",  ref vfm, 1)) _visFilter = (VisFilterMode)vfm;
+            ImGui.SameLine();
+            if (ImGui.RadioButton("See-thru##vfm",  ref vfm, 2)) _visFilter = (VisFilterMode)vfm;
+
+            // ── BALLISTIC quick filter ──────────────────────────────────────
+            ImGui.Checkbox("Only BALLISTIC", ref _ballisticOnly);
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "Show only actors whose name contains \"BALLISTIC\" — BSG's own\n" +
+                    "marker for shootable-through-blocking world geometry.\n" +
+                    "On Arena_Prison this matches ~2300 of ~2700 layer-12 walls.");
+
+            // ── Substring filter ────────────────────────────────────────────
             float avail = ImGui.GetContentRegionAvail().X;
             ImGui.SetNextItemWidth(avail);
-            ImGui.InputTextWithHint("##name_filter", "filter by name…", ref _nameFilter, 128);
+            ImGui.InputTextWithHint("##name_filter", "name contains…", ref _nameFilter, 128);
             if (ImGui.IsItemHovered())
                 ImGui.SetTooltip(
                     "Case-insensitive substring — only actors whose name contains\n" +
                     "this text are drawn. Clear to show all.");
 
+            // ── Layer grid ──────────────────────────────────────────────────
             ImGui.TextDisabled("Layer display filter (orange=shown, dark=hidden):");
             for (int row = 0; row < 4; row++)
             {
@@ -574,6 +704,220 @@ namespace eft_dma_radar.Arena.Unity.PhysX
             if (ImGui.SmallButton("None##ldf"))   _layerDisplayFilter = 0u;
             ImGui.SameLine();
             if (ImGui.SmallButton("Invert##ldf")) _layerDisplayFilter = ~_layerDisplayFilter;
+
+            // ── Name-prefix buckets ─────────────────────────────────────────
+            DrawBucketSubsection();
+        }
+
+        /// <summary>
+        /// Auto-extracted name-prefix bucket panel. Built lazily from the
+        /// current snapshot the first time it's rendered after a swap (~one
+        /// pass over 7k actor names; cached for the rest of the snapshot's
+        /// lifetime). Each row carries a per-bucket count and a hide/show
+        /// toggle so the user can drop 1000 "Prison_metal_*" props with
+        /// a single click instead of fighting the substring field.
+        /// </summary>
+        private static void DrawBucketSubsection()
+        {
+            var snap = SceneCache.Snapshot;
+            RebuildBucketCacheIfStale(snap);
+            // Pick the source bucket list — when in BlockersOnly the per-bucket
+            // counts should reflect that filter (otherwise the user sees "1159
+            // glass" and can't tell which fraction is real cover).
+            var src = _visFilter == VisFilterMode.BlockersOnly
+                ? _bucketsBlockers
+                : _bucketsAll;
+
+            if (!ImGui.TreeNode($"Name buckets ({src.Count})##nb"))
+                return;
+
+            float fw = ImGui.GetContentRegionAvail().X;
+            ImGui.SetNextItemWidth(fw);
+            ImGui.InputTextWithHint("##bucket_filter", "filter buckets…", ref _bucketFilter, 64);
+
+            if (ImGui.SmallButton("Show all##nb"))   _hiddenBuckets.Clear();
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Hide all##nb"))
+            {
+                _hiddenBuckets.Clear();
+                foreach (var b in src) _hiddenBuckets.Add(b.Bucket);
+            }
+            ImGui.SameLine();
+            ImGui.TextDisabled($"hidden={_hiddenBuckets.Count}");
+
+            // Scrollable table — 6 rows fit comfortably without forcing a
+            // double-scrollbar layout. The sidebar's outer scroll handles
+            // overflow when the bucket count is large.
+            if (ImGui.BeginTable("##bktbl", 3,
+                    ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp |
+                    ImGuiTableFlags.ScrollY, new Vector2(0, 180f)))
+            {
+                ImGui.TableSetupColumn("",       ImGuiTableColumnFlags.WidthFixed,   22f);
+                ImGui.TableSetupColumn("Bucket", ImGuiTableColumnFlags.WidthStretch, 1.0f);
+                ImGui.TableSetupColumn("N",      ImGuiTableColumnFlags.WidthFixed,   42f);
+                ImGui.TableSetupScrollFreeze(0, 1);
+                ImGui.TableHeadersRow();
+
+                for (int i = 0; i < src.Count; i++)
+                {
+                    var (bucket, count) = src[i];
+                    if (_bucketFilter.Length > 0
+                        && bucket.IndexOf(_bucketFilter, StringComparison.OrdinalIgnoreCase) < 0)
+                        continue;
+
+                    ImGui.TableNextRow();
+
+                    ImGui.TableSetColumnIndex(0);
+                    bool visible = !_hiddenBuckets.Contains(bucket);
+                    ImGui.PushID(i);
+                    if (ImGui.Checkbox("##bk", ref visible))
+                    {
+                        if (visible) _hiddenBuckets.Remove(bucket);
+                        else         _hiddenBuckets.Add(bucket);
+                    }
+                    ImGui.PopID();
+
+                    ImGui.TableSetColumnIndex(1);
+                    ImGui.TextUnformatted(bucket);
+
+                    ImGui.TableSetColumnIndex(2);
+                    ImGui.Text(count.ToString());
+                }
+                ImGui.EndTable();
+            }
+
+            ImGui.TreePop();
+        }
+
+        // ── Filter helpers / presets ────────────────────────────────────────
+
+        private static void ApplyPreset_Reset()
+        {
+            _visFilter          = VisFilterMode.All;
+            _ballisticOnly      = false;
+            _nameFilter         = string.Empty;
+            _layerDisplayFilter = uint.MaxValue;
+            _hideSeeThrough     = false;
+            _hiddenBuckets.Clear();
+            _bucketFilter       = string.Empty;
+        }
+
+        private static void ApplyPreset_CoverOnly()
+        {
+            ApplyPreset_Reset();
+            _visFilter     = VisFilterMode.BlockersOnly;
+            _ballisticOnly = true;
+        }
+
+        private static void ApplyPreset_Walls()
+        {
+            ApplyPreset_Reset();
+            _visFilter          = VisFilterMode.BlockersOnly;
+            _layerDisplayFilter = 1u << 12; // only layer 12 — world geometry
+        }
+
+        private static void ApplyPreset_SeeThroughDebug()
+        {
+            ApplyPreset_Reset();
+            _visFilter = VisFilterMode.SeeThroughOnly;
+        }
+
+        private static bool PassesVisFilter(bool isSeeThrough) => _visFilter switch
+        {
+            VisFilterMode.BlockersOnly   => !isSeeThrough,
+            VisFilterMode.SeeThroughOnly =>  isSeeThrough,
+            _                            => true,
+        };
+
+        private static bool PassesBucketFilter(string? name)
+        {
+            if (_hiddenBuckets.Count == 0) return true;
+            return !_hiddenBuckets.Contains(ExtractBucket(name));
+        }
+
+        /// <summary>
+        /// Splits an actor name into a coarse bucket: the prefix up to the
+        /// first underscore / space / paren / digit. Empirically this gives
+        /// useful groupings on Arena_Prison:
+        /// <list type="bullet">
+        ///   <item><c>Prison_metal_*</c> → "Prison"</item>
+        ///   <item><c>Fort_Wall_*</c>    → "Fort"</item>
+        ///   <item><c>Cube (12)</c>      → "Cube"</item>
+        ///   <item><c>glass</c>          → "glass"</item>
+        /// </list>
+        /// </summary>
+        private static string ExtractBucket(string? name)
+        {
+            if (string.IsNullOrEmpty(name)) return "(no name)";
+            for (int i = 0; i < name.Length; i++)
+            {
+                char c = name[i];
+                if (c == '_' || c == ' ' || c == '(' || c == '-' || (c >= '0' && c <= '9'))
+                    return i == 0 ? "(other)" : name.Substring(0, i);
+            }
+            return name;
+        }
+
+        /// <summary>
+        /// Rebuilds the cached bucket lists when (and only when) the snapshot
+        /// reference changes. ReferenceEquals works here because <see cref="SceneCache"/>
+        /// publishes new snapshots via <c>Volatile.Write</c> with a single ref
+        /// swap — same reference means same content, period.
+        /// </summary>
+        private static void RebuildBucketCacheIfStale(SceneSnapshot snap)
+        {
+            if (ReferenceEquals(snap, _bucketSnapshotRef)) return;
+            _bucketSnapshotRef = snap;
+
+            var all     = new Dictionary<string, int>(StringComparer.Ordinal);
+            var blocker = new Dictionary<string, int>(StringComparer.Ordinal);
+
+            for (int i = 0; i < snap.Actors.Length; i++)
+            {
+                var a = snap.Actors[i];
+                var b = ExtractBucket(a.Name);
+                all.TryGetValue(b, out var n);     all[b]     = n + 1;
+                if (!a.IsSeeThrough)
+                {
+                    blocker.TryGetValue(b, out var m); blocker[b] = m + 1;
+                }
+            }
+
+            _bucketsAll = all
+                .Select(kv => (kv.Key, kv.Value))
+                .OrderByDescending(t => t.Value)
+                .ToList();
+            _bucketsBlockers = blocker
+                .Select(kv => (kv.Key, kv.Value))
+                .OrderByDescending(t => t.Value)
+                .ToList();
+        }
+
+        private static void DrawPlayerOverlaySection()
+        {
+            ImGui.TextDisabled("Live Players (3D radar)");
+
+            ImGui.Checkbox("Show players", ref _showPlayers);
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "Overlay live enemy + local-player positions as vertical\n" +
+                    "marker columns. Reads Memory.CurrentGameWorld.Players —\n" +
+                    "no extra DMA work, the realtime worker already populates it.");
+
+            if (_showPlayers)
+            {
+                ImGui.Indent();
+                ImGui.Checkbox("Names##pl",  ref _showPlayerNames);
+                ImGui.Checkbox("Dim if visible to LP##pl", ref _dimVisiblePlayers);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(
+                        "When the visibility worker marks an enemy as visible\n" +
+                        "from the local player's eye, draw their marker at half\n" +
+                        "alpha. Quick sanity check that vischeck agrees with the\n" +
+                        "geometry you're staring at.");
+                ImGui.SliderFloat("Height##pl", ref _playerMarkerHeight, 0.5f, 3.0f, "%.1f m");
+                ImGui.Unindent();
+            }
         }
 
         private static void DrawVisOverlaySection()
@@ -1302,6 +1646,66 @@ namespace eft_dma_radar.Arena.Unity.PhysX
                     havePrev = true;
                 }
                 else havePrev = false;
+            }
+        }
+
+        /// <summary>
+        /// Draws a single player as a vertical column from feet up to
+        /// <see cref="_playerMarkerHeight"/>, with a small dot at the head
+        /// and optionally a name label above. Distance-cull-aware so it
+        /// honours the same Range slider as the geometry pass — otherwise
+        /// players 500 m away would still draw on top of everything.
+        /// </summary>
+        private static void DrawPlayerMarker(
+            ImDrawListPtr dl,
+            eft_dma_radar.Arena.GameWorld.Player p,
+            Matrix4x4 viewProj, Vector2 vpOrigin, Vector2 vpSize)
+        {
+            Vector3 feet = p.Position;
+            float distSq = Vector3.DistanceSquared(_camPos, feet);
+            if (distSq > _renderRange * _renderRange) return;
+
+            // Local player = green. Enemies = red, dimmed when vischeck says
+            // they're currently visible to the local eye (lets the user verify
+            // the cache view matches what ESP is showing in-match).
+            uint color;
+            if (p.IsLocalPlayer)
+                color = ColorPlayerLocal;
+            else if (_dimVisiblePlayers && p.IsVisible)
+                color = ColorPlayerEnemyDim;
+            else
+                color = ColorPlayerEnemy;
+
+            Vector3 head = feet + new Vector3(0f, _playerMarkerHeight, 0f);
+            bool okFeet = Project(feet, viewProj, vpOrigin, vpSize, out var feetSc);
+            bool okHead = Project(head, viewProj, vpOrigin, vpSize, out var headSc);
+
+            // Both endpoints behind the camera? Nothing usable to draw.
+            if (!okFeet && !okHead) return;
+
+            // Vertical body line — only emitted when both ends project. A
+            // single endpoint isn't enough for a meaningful line and would
+            // smear off-screen as the camera turns.
+            if (okFeet && okHead)
+                dl.AddLine(feetSc, headSc, color, 2.0f);
+
+            // Head dot — always drawn when the head projects, regardless of
+            // feet. Helps pick out players hidden behind the bottom edge of
+            // a window or low cover.
+            if (okHead)
+                dl.AddCircleFilled(headSc, 4f, color, 8);
+
+            // Feet ring — small ground anchor so the player sits visually on
+            // the floor instead of floating mid-air at distance.
+            if (okFeet)
+                dl.AddCircle(feetSc, 5f, color, 10, 1.5f);
+
+            // Optional name label above the head dot. Same alpha as the
+            // marker so dimming carries through to the text.
+            if (_showPlayerNames && okHead && !string.IsNullOrEmpty(p.Name))
+            {
+                var labelPos = new Vector2(headSc.X + 6f, headSc.Y - 14f);
+                dl.AddText(labelPos, color, p.Name);
             }
         }
 
